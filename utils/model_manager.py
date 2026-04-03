@@ -39,10 +39,14 @@ class ModelManager:
         self.data_pipeline = DataPipeline(random_state=random_state)
 
     def ensure_models(self) -> None:
-        self.load_primary_model()
-        self.load_secondary_model()
+        if self.primary_pipeline is None:
+            self.load_primary_model()
+        if self.secondary_status == "uninitialized":
+            self.load_secondary_model()
 
     def load_primary_model(self) -> None:
+        if self.primary_pipeline is not None:
+            return
         if PRIMARY_MODEL_PATH.exists():
             loaded = joblib.load(PRIMARY_MODEL_PATH)
             self.primary_pipeline = loaded["pipeline"]
@@ -120,7 +124,7 @@ class ModelManager:
         )
 
     def load_secondary_model(self) -> None:
-        if self.secondary_status == "ready":
+        if self.secondary_status != "uninitialized":
             return
 
         try:
@@ -229,7 +233,8 @@ class ModelManager:
         self.secondary_status = "ready"
 
     def predict_secondary(self, text: str, fallback_label: str, fallback_confidence: float) -> dict[str, Any]:
-        self.load_secondary_model()
+        if self.secondary_status == "uninitialized":
+            self.load_secondary_model()
         if self.secondary_status != "ready" or self.secondary_model is None or self.secondary_tokenizer is None:
             return {
                 "label": fallback_label,

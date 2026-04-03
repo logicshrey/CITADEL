@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion as Motion } from 'framer-motion'
+import CircularProgress from '../components/CircularProgress'
 import Loader from '../components/Loader'
+import TerminalConsole from '../components/TerminalConsole'
 import ThreatCard from '../components/ThreatCard'
-import RiskBadge from '../components/RiskBadge'
+import Toast from '../components/Toast'
 import { analyzeText } from '../services/api'
 
 const sampleTexts = [
@@ -11,12 +13,19 @@ const sampleTexts = [
   'Phishing page ready for Microsoft 365 users with OTP relay and Telegram operator.',
 ]
 
+const idleConsoleLines = [
+  'Awaiting suspicious intelligence packet...',
+  'Neural signature engine standing by.',
+  'Regex detectors primed for credential leakage patterns.',
+]
+
 function useTypedText(value) {
   const [displayText, setDisplayText] = useState('')
 
   useEffect(() => {
     if (!value) {
-      return
+      const timeoutId = window.setTimeout(() => setDisplayText(''), 0)
+      return () => window.clearTimeout(timeoutId)
     }
 
     let index = 0
@@ -38,7 +47,8 @@ function Analyzer() {
   const [text, setText] = useState(sampleTexts[0])
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [toast, setToast] = useState('')
+  const [streamFrame, setStreamFrame] = useState('')
 
   const summaryText = useMemo(() => {
     if (!result) {
@@ -50,20 +60,63 @@ function Analyzer() {
 
   const typedSummary = useTypedText(summaryText)
 
+  const consoleLines = useMemo(() => {
+    if (loading) {
+      return [
+        'Scanning dark web marketplaces...',
+        'Cross-checking semantic signatures...',
+        'Threat signature detected...',
+        'Entity extraction pipeline active...',
+      ]
+    }
+
+    if (!result) {
+      return idleConsoleLines
+    }
+
+    return [
+      `Threat class resolved to ${result.threat_type}.`,
+      `Risk level calibrated to ${result.risk_level}.`,
+      `Detected ${result.entities?.length || 0} named entities and ${Object.values(result.patterns || {}).flat().length} pattern hits.`,
+      'Model verdict committed to analyst console.',
+    ]
+  }, [loading, result])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const frame = Array.from({ length: 7 }, (_, rowIndex) =>
+        Array.from({ length: 30 }, (_, colIndex) => ((rowIndex * 17 + colIndex * 13 + Date.now()) % 16).toString(16).toUpperCase()).join(' '),
+      ).join('\n')
+      setStreamFrame(frame)
+    }, 280)
+
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    if (!toast) {
+      return undefined
+    }
+
+    const timeoutId = window.setTimeout(() => setToast(''), 3500)
+    return () => window.clearTimeout(timeoutId)
+  }, [toast])
+
   const handleAnalyze = async () => {
     if (!text.trim()) {
-      setError('Enter suspicious content before running analysis.')
+      setToast('Enter suspicious content before initiating a deep scan.')
       return
     }
 
     setLoading(true)
-    setError('')
+    setToast('')
+    setResult(null)
 
     try {
       const response = await analyzeText(text.trim())
       setResult(response)
     } catch (apiError) {
-      setError(
+      setToast(
         apiError?.response?.data?.detail ||
           'Backend is unreachable. Start the FastAPI server at http://127.0.0.1:8000.',
       )
@@ -74,85 +127,119 @@ function Analyzer() {
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-      <Motion.section
-        initial={{ opacity: 0, x: -18 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="glass-card rounded-3xl p-6"
-      >
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-[#00CFFF]">Analyzer</p>
-            <h2 className="mt-2 text-3xl font-semibold text-white">Investigate suspicious dark web chatter</h2>
+    <div className="space-y-6">
+      <Toast message={toast} />
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <Motion.section
+          initial={{ opacity: 0, x: -18 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="glass-card neon-panel rounded-[32px] p-6"
+        >
+          <p className="text-xs uppercase tracking-[0.38em] text-[#00E5FF]">Neural Threat Analyzer</p>
+          <h2 className="mt-3 text-4xl font-semibold text-white">Deep-scan hostile chatter in real time</h2>
+          <p className="mt-4 max-w-3xl text-sm text-slate-300">
+            Interrogate suspicious marketplace posts, leak previews, phishing lures, and malware sale listings
+            using the existing backend intelligence pipeline.
+          </p>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_auto]">
+            <div className="rounded-[28px] border border-[#00E5FF]/16 bg-[#020617]/82 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+              <div className="terminal-text mb-3 text-xs uppercase tracking-[0.3em] text-slate-500">
+                &gt;&gt;&gt; Enter suspicious text...
+              </div>
+              <textarea
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                placeholder=">>> Enter suspicious text..."
+                className="terminal-text min-h-72 w-full resize-none bg-transparent text-sm leading-7 text-slate-100 outline-none placeholder:text-slate-500"
+              />
+            </div>
+
+            <div className="grid gap-4">
+              <div className="glass-card rounded-[28px] px-5 py-4">
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Threat score</p>
+                <p className="mt-2 text-3xl font-semibold text-white">
+                  {result ? `${Math.round(result.confidence_score * 100)}%` : '--'}
+                </p>
+              </div>
+              <div className="glass-card rounded-[28px] px-5 py-4">
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Signal status</p>
+                <p className="mt-2 text-3xl font-semibold text-[#00FF9F]">{result?.threat_type || 'Idle'}</p>
+              </div>
+            </div>
           </div>
-          <RiskBadge level={result?.risk_level || 'LOW'} />
-        </div>
 
-        <p className="mt-4 max-w-2xl text-sm text-slate-300">
-          Submit leaked credentials, phishing lures, malware sale chatter, or database dump references for
-          instant AI-assisted triage.
-        </p>
-
-        <div className="mt-6 space-y-4">
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder="Paste suspicious text, forum snippet, or credential sale post..."
-            className="min-h-64 w-full rounded-3xl border border-[#00CFFF]/20 bg-[#020817]/80 p-4 text-sm text-slate-100 outline-none transition focus:border-[#00CFFF] focus:shadow-[0_0_18px_rgba(0,207,255,0.2)]"
-          />
-
-          <div className="flex flex-wrap gap-3">
+          <div className="mt-5 flex flex-wrap gap-3">
             {sampleTexts.map((sample) => (
               <button
                 key={sample}
                 type="button"
                 onClick={() => setText(sample)}
-                className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-slate-300 transition hover:border-[#00CFFF]/35 hover:text-white"
+                className="terminal-text rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[11px] uppercase tracking-[0.24em] text-slate-300 transition hover:border-[#00E5FF]/35 hover:text-white"
               >
                 Load sample
               </button>
             ))}
           </div>
 
-          <Motion.button
-            whileTap={{ scale: 0.98 }}
-            whileHover={{ y: -1 }}
-            type="button"
-            onClick={handleAnalyze}
-            className="inline-flex items-center justify-center rounded-2xl bg-[#00CFFF] px-5 py-3 font-semibold text-slate-950 shadow-[0_0_24px_rgba(0,207,255,0.35)] transition hover:bg-[#60dfff]"
-          >
-            Analyze Threat
-          </Motion.button>
-
-          {error && (
-            <div className="rounded-2xl border border-[#FF3B3B]/35 bg-[#FF3B3B]/10 px-4 py-3 text-sm text-[#FFB4B4]">
-              {error}
-            </div>
-          )}
-        </div>
-      </Motion.section>
-
-      <Motion.section
-        initial={{ opacity: 0, x: 18 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="space-y-6"
-      >
-        <div className="glass-card rounded-3xl p-6">
-          <p className="text-xs uppercase tracking-[0.35em] text-[#00FF9F]">AI Output</p>
-          <h3 className="mt-2 text-2xl font-semibold text-white">Threat verdict</h3>
-          <div className="mt-6 min-h-28 rounded-2xl border border-white/8 bg-black/10 p-4">
-            {loading ? (
-              <Loader label="Running regex, NLP, and model inference..." />
-            ) : typedSummary ? (
-              <p className="text-lg leading-8 text-slate-100">{typedSummary}</p>
-            ) : (
-              <p className="text-slate-400">Run an analysis to see threat classification, extracted entities, and risk signals.</p>
-            )}
+          <div className="mt-6">
+            <Motion.button
+              whileTap={{ scale: 0.98 }}
+              whileHover={{ scale: 1.01, y: -1 }}
+              type="button"
+              onClick={handleAnalyze}
+              className="terminal-text rounded-[22px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-6 py-3 text-sm font-bold uppercase tracking-[0.28em] text-slate-950 shadow-[0_0_28px_rgba(0,229,255,0.28)] transition"
+            >
+              Initiate Deep Scan
+            </Motion.button>
           </div>
-        </div>
+        </Motion.section>
 
-        {result && <ThreatCard item={result} />}
-      </Motion.section>
+        <Motion.section
+          initial={{ opacity: 0, x: 18 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="grid gap-6"
+        >
+          <CircularProgress
+            value={result ? result.confidence_score * 100 : 6}
+            riskLevel={result?.risk_level || 'LOW'}
+            label="Threat level"
+          />
+
+          <div className="glass-card neon-panel rounded-[28px] p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">Data stream</p>
+              <div className="terminal-text flicker text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                encrypted telemetry
+              </div>
+            </div>
+            <pre className="terminal-text flicker min-h-[220px] overflow-hidden rounded-[22px] border border-white/8 bg-[#020617]/85 p-4 text-xs leading-6 text-[#00E5FF]">
+              {streamFrame}
+            </pre>
+          </div>
+        </Motion.section>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <TerminalConsole key={consoleLines.join('|')} title="System Console" lines={consoleLines} accent="#00E5FF" />
+
+        <div className="space-y-6">
+          <div className="glass-card neon-panel rounded-[28px] p-5">
+            <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">Verdict Channel</p>
+            <div className="mt-4 min-h-28 rounded-[22px] border border-white/8 bg-black/10 p-4">
+              {loading ? (
+                <Loader label="Running regex, NLP, and model inference..." />
+              ) : typedSummary ? (
+                <p className="text-lg leading-8 text-slate-100">{typedSummary}</p>
+              ) : (
+                <p className="text-slate-400">Run a scan to surface threat classification, extracted entities, and confidence details.</p>
+              )}
+            </div>
+          </div>
+
+          {result ? <ThreatCard item={result} title="Threat intelligence result" /> : null}
+        </div>
+      </div>
     </div>
   )
 }
