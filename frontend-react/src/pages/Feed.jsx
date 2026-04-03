@@ -4,10 +4,11 @@ import Loader from '../components/Loader'
 import StatCard from '../components/StatCard'
 import ThreatCard from '../components/ThreatCard'
 import Toast from '../components/Toast'
-import { getAlerts } from '../services/api'
+import { getAlerts, getStats } from '../services/api'
 
 function Feed() {
   const [alerts, setAlerts] = useState([])
+  const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
 
@@ -17,8 +18,10 @@ function Feed() {
     const loadAlerts = async () => {
       try {
         const response = await getAlerts()
+        const statsResponse = await getStats()
         if (mounted) {
           setAlerts(response?.alerts || [])
+          setStats(statsResponse)
           setToast('')
         }
       } catch (apiError) {
@@ -57,9 +60,11 @@ function Feed() {
     return latest ? new Date(latest).toLocaleTimeString() : 'No events'
   }, [alerts])
 
-  const highCount = alerts.filter((alert) => (alert.results?.risk_level || alert.risk_level) === 'HIGH').length
-  const mediumCount = alerts.filter((alert) => (alert.results?.risk_level || alert.risk_level) === 'MEDIUM').length
-  const packetsPerSecond = Math.max(12, alerts.length * 3 + 17)
+  const highCount = stats?.risk_levels?.HIGH ?? alerts.filter((alert) => (alert.results?.risk_level || alert.risk_level) === 'HIGH').length
+  const mediumCount = stats?.risk_levels?.MEDIUM ?? alerts.filter((alert) => (alert.results?.risk_level || alert.risk_level) === 'MEDIUM').length
+  const criticalCount = stats?.priority_distribution?.CRITICAL ?? 0
+  const correlatedCount = stats?.correlation_overview?.correlated_alerts ?? 0
+  const packetsPerSecond = Math.max(12, (stats?.total_alerts ?? alerts.length) * 2 + correlatedCount + 11)
 
   return (
     <div className="space-y-6">
@@ -87,10 +92,10 @@ function Feed() {
       </Motion.section>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Active Threats" value={alerts.length} accent="#00E5FF" icon="AT" />
-        <StatCard label="Scans Today" value={alerts.length * 9 + 24} accent="#00FF9F" icon="SD" />
-        <StatCard label="Blocked" value={highCount + mediumCount} accent="#FF3B3B" icon="BL" />
-        <StatCard label="Uptime" value="99.98%" accent="#FFC857" icon="UP" />
+        <StatCard label="Active Threats" value={stats?.total_alerts ?? alerts.length} accent="#00E5FF" icon="AT" />
+        <StatCard label="Correlated" value={correlatedCount} accent="#00FF9F" icon="CL" />
+        <StatCard label="Escalated" value={criticalCount + highCount} accent="#FF3B3B" icon="ES" />
+        <StatCard label="Medium Risk" value={mediumCount} accent="#FFC857" icon="MR" />
       </div>
 
       <Motion.section

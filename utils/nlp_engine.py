@@ -10,6 +10,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 from utils.config import LABELS, THREAT_TEMPLATES
 from utils.db import MongoManager
+from utils.intel_enrichment import (
+    correlate_alerts,
+    decode_slang,
+    estimate_impact,
+    extract_enriched_entities,
+    normalize_multilingual_text,
+    prioritize_alert,
+)
 from utils.model_manager import ModelManager
 from utils.text_utils import clean_text
 
@@ -24,6 +32,7 @@ REGEX_PATTERNS = {
     "credit_cards": re.compile(r"\b(?:\d[ -]*?){13,16}\b"),
     "telegram_handles": re.compile(r"(?<!\w)@[A-Za-z0-9_]{5,32}\b"),
     "onion_links": re.compile(r"\b[a-z2-7]{16,56}\.onion\b"),
+    "domains": re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b"),
 }
 
 SIMULATION_TEXTS = [
@@ -49,16 +58,21 @@ class ThreatIntelligenceEngine:
 
     def analyze_text(self, text: str, persist: bool = True) -> dict[str, Any]:
         original_text = str(text or "").strip()
-        cleaned_text = clean_text(original_text)
-
         self.bootstrap()
 
         regex_matches = self.detect_patterns(original_text)
+        multilingual_analysis = normalize_multilingual_text(original_text)
+        slang_decoder = decode_slang(multilingual_analysis["normalized_text"])
+        analysis_text = clean_text(slang_decoder["normalized_text"])
+
         entities = self.extract_entities(original_text)
-        semantic_matches = self.semantic_similarity(cleaned_text)
-        primary_prediction = self.model_manager.predict_primary(cleaned_text)
+        enriched_entities = extract_enriched_entities(original_text, regex_matches)
+        all_entities = self._merge_entities(entities, enriched_entities)
+
+        semantic_matches = self.semantic_similarity(analysis_text)
+        primary_prediction = self.model_manager.predict_primary(analysis_text)
         secondary_prediction = self.model_manager.predict_secondary(
-            cleaned_text,
+            analysis_text,
             fallback_label=primary_prediction.label,
             fallback_confidence=primary_prediction.confidence,
         )
@@ -69,16 +83,26 @@ class ThreatIntelligenceEngine:
             secondary_prediction.get("confidence", 0.0),
             semantic_matches.get("top_score", 0.0),
         )
-        risk_level = self.compute_risk_level(regex_matches, entities, threat_type)
+        risk_level = self.compute_risk_level(regex_matches, all_entities, threat_type)
+        impact_assessment = estimate_impact(
+            threat_type=threat_type,
+            text=original_text,
+            regex_matches=regex_matches,
+            entities=all_entities,
+            slang=slang_decoder,
+        )
 
         result = {
             "input_text": original_text,
-            "cleaned_text": cleaned_text,
+            "cleaned_text": analysis_text,
             "threat_type": threat_type,
             "risk_level": risk_level,
             "confidence_score": round(float(confidence), 4),
             "patterns": regex_matches,
-            "entities": entities,
+            "entities": all_entities,
+            "enriched_entities": enriched_entities,
+            "multilingual_analysis": multilingual_analysis,
+            "slang_decoder": slang_decoder,
             "semantic_analysis": semantic_matches,
             "primary_classification": {
                 "label": primary_prediction.label,
@@ -91,21 +115,34 @@ class ThreatIntelligenceEngine:
                 threat_type=threat_type,
                 risk_level=risk_level,
                 regex_matches=regex_matches,
-                entities=entities,
+                entities=all_entities,
                 primary_prediction=primary_prediction,
                 semantic_matches=semantic_matches,
             ),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+        recent_alerts = self.db.fetch_alerts(limit=200)
+        correlation = correlate_alerts(result, recent_alerts)
+        alert_priority = prioritize_alert(
+            risk_level=risk_level,
+            confidence_score=float(confidence),
+            impact_assessment=impact_assessment,
+            correlation=correlation,
+        )
+        result["correlation"] = correlation
+        result["impact_assessment"] = impact_assessment
+        result["alert_priority"] = alert_priority
+
         alert = {
             "text": original_text,
             "results": result,
             "alerts": {
                 "threat_type": threat_type,
-                "entities": entities,
+                "entities": all_entities,
                 "patterns": regex_matches,
                 "risk_level": risk_level,
+                "priority": alert_priority["priority"],
                 "timestamp": result["timestamp"],
             },
             "timestamps": {
@@ -205,6 +242,16 @@ class ThreatIntelligenceEngine:
         if org_hits or threat_type in {"Phishing", "Credential Leak", "Malware Sale", "Database Dump"}:
             return "MEDIUM"
         return "LOW"
+
+    def _merge_entities(self, base_entities: list[dict[str, str]], extra_entities: list[dict[str, str]]) -> list[dict[str, str]]:
+        merged = []
+        seen = set()
+        for entity in [*base_entities, *extra_entities]:
+            key = (entity.get("text", "").lower(), entity.get("label"))
+            if key not in seen and entity.get("text"):
+                seen.add(key)
+                merged.append(entity)
+        return merged
 
     def resolve_threat_type(self, primary_label: str, semantic_matches: dict[str, Any]) -> str:
         semantic_label = semantic_matches.get("top_label", primary_label)

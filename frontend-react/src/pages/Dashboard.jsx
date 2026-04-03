@@ -57,27 +57,31 @@ function Dashboard() {
 
   const threatData = Object.entries(stats?.threat_distribution || {}).map(([name, value]) => ({ name, value }))
   const riskData = Object.entries(stats?.risk_levels || {}).map(([name, value]) => ({ name, value }))
+  const priorityData = Object.entries(stats?.priority_distribution || {}).map(([name, value]) => ({ name, value }))
+  const languageData = Object.entries(stats?.language_distribution || {}).map(([name, value]) => ({ name, value }))
   const highRisk = stats?.risk_levels?.HIGH ?? 0
   const mediumRisk = stats?.risk_levels?.MEDIUM ?? 0
   const lowRisk = stats?.risk_levels?.LOW ?? 0
+  const correlationOverview = stats?.correlation_overview || {}
   const activityData = [
-    { time: '00:00', scans: 14 },
-    { time: '04:00', scans: 22 },
-    { time: '08:00', scans: 38 },
-    { time: '12:00', scans: 51 },
-    { time: '16:00', scans: 46 },
-    { time: '20:00', scans: 64 },
+    { time: '00:00', scans: Math.max(6, Math.round((stats?.total_alerts ?? 0) * 0.12)) },
+    { time: '04:00', scans: Math.max(12, Math.round((stats?.total_alerts ?? 0) * 0.18)) },
+    { time: '08:00', scans: Math.max(18, Math.round((stats?.total_alerts ?? 0) * 0.26)) },
+    { time: '12:00', scans: Math.max(24, Math.round((stats?.total_alerts ?? 0) * 0.33)) },
+    { time: '16:00', scans: Math.max(16, Math.round((stats?.total_alerts ?? 0) * 0.29)) },
+    { time: '20:00', scans: Math.max(20, Math.round((stats?.total_alerts ?? 0) * 0.4)) },
   ]
   const sideMetrics = [
-    { label: 'Neural Engine', value: 92, accent: '#00E5FF' },
+    { label: 'Neural Engine', value: Math.min(99, 65 + Math.round((stats?.model_metrics?.accuracy || 0) * 30)), accent: '#00E5FF' },
     { label: 'Database Load', value: stats?.mongo_connected ? 74 : 33, accent: '#00FF9F' },
-    { label: 'Scan Rate', value: 81, accent: '#FFC857' },
-    { label: 'Active Nodes', value: 67, accent: '#FF3B3B' },
+    { label: 'Scan Rate', value: Math.min(98, Math.max(18, Math.round((stats?.total_alerts ?? 0) * 1.5))), accent: '#FFC857' },
+    { label: 'Active Nodes', value: Math.min(95, Math.max(12, correlationOverview.correlated_alerts || 12)), accent: '#FF3B3B' },
   ]
   const consoleLines = [
     'Command center synchronized with FastAPI telemetry.',
     `Monitoring ${stats?.total_alerts ?? 0} total persisted alerts.`,
     `Risk distribution HIGH:${highRisk} MEDIUM:${mediumRisk} LOW:${lowRisk}.`,
+    `Average campaign score ${correlationOverview.average_campaign_score || 0}; average impact ${correlationOverview.average_impact_score || 0}.`,
     `Secondary model status: ${stats?.secondary_status || 'unknown'}.`,
   ]
   const mapNodes = [
@@ -244,6 +248,74 @@ function Dashboard() {
                 ) : (
                   <div className="flex h-full items-center justify-center text-slate-400">No threat data available yet.</div>
                 )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[0.9fr_0.9fr_1.2fr]">
+            <div className="glass-card neon-panel rounded-[32px] p-6">
+              <p className="text-xs uppercase tracking-[0.35em] text-[#FF3B3B]">Priority Tiers</p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">Alert priority</h3>
+              <div className="mt-6 h-72">
+                {priorityData.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={priorityData}>
+                      <XAxis dataKey="name" stroke="#94A3B8" />
+                      <YAxis stroke="#94A3B8" allowDecimals={false} />
+                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,59,59,0.2)', borderRadius: 16 }} />
+                      <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                        {priorityData.map((entry) => (
+                          <Cell
+                            key={entry.name}
+                            fill={entry.name === 'CRITICAL' ? '#FF3B3B' : entry.name === 'HIGH' ? '#FF7A7A' : entry.name === 'MEDIUM' ? '#FFC857' : '#00FF9F'}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-slate-400">No priority data available yet.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-card neon-panel rounded-[32px] p-6">
+              <p className="text-xs uppercase tracking-[0.35em] text-[#FFC857]">Language Coverage</p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">Normalized sources</h3>
+              <div className="mt-6 h-72">
+                {languageData.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={languageData} dataKey="value" nameKey="name" innerRadius={42} outerRadius={82} paddingAngle={4}>
+                        {languageData.map((entry, index) => (
+                          <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,200,87,0.2)', borderRadius: 16 }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-slate-400">No multilingual data available yet.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-card neon-panel rounded-[32px] p-6">
+              <p className="text-xs uppercase tracking-[0.35em] text-[#00FF9F]">Correlation & Impact</p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">Intelligence quality</h3>
+              <div className="mt-6 grid gap-4 md:grid-cols-3">
+                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Correlated Alerts</p>
+                  <p className="mt-3 text-3xl font-semibold text-white">{correlationOverview.correlated_alerts ?? 0}</p>
+                </div>
+                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Avg Campaign Score</p>
+                  <p className="mt-3 text-3xl font-semibold text-[#00E5FF]">{correlationOverview.average_campaign_score ?? 0}</p>
+                </div>
+                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Avg Impact Score</p>
+                  <p className="mt-3 text-3xl font-semibold text-[#FFC857]">{correlationOverview.average_impact_score ?? 0}</p>
+                </div>
               </div>
             </div>
           </div>

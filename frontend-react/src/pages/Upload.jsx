@@ -111,6 +111,8 @@ function Upload() {
           threat_type: response.threat_type,
           risk_level: response.risk_level,
           confidence_score: response.confidence_score,
+          priority: response.alert_priority?.priority,
+          impact_score: response.impact_assessment?.impact_score,
         })
       }
       setResults(analyses)
@@ -232,6 +234,12 @@ function Upload() {
                       </div>
                       <div className="flex items-center gap-3">
                         <RiskBadge level={item.risk_level} />
+                        <span className="terminal-text text-xs uppercase tracking-[0.24em] text-[#A8F3FF]">
+                          {item.priority || 'LOW'}
+                        </span>
+                        <span className="terminal-text text-xs uppercase tracking-[0.24em] text-[#FFD98C]">
+                          Impact {item.impact_score || 0}
+                        </span>
                         <span className="terminal-text text-sm text-slate-400">{(item.confidence_score * 100).toFixed(1)}%</span>
                       </div>
                     </div>

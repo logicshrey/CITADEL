@@ -64,22 +64,51 @@ class MongoManager:
         risk_counter = Counter()
         entity_counter = Counter()
         org_counter = Counter()
+        priority_counter = Counter()
+        language_counter = Counter()
+        data_type_counter = Counter()
+        domain_counter = Counter()
+        correlated_alerts = 0
+        campaign_scores: list[int] = []
+        impact_scores: list[int] = []
 
         for alert in alerts:
             result = alert.get("results", alert)
             threat_counter[result.get("threat_type", "Unknown")] += 1
             risk_counter[result.get("risk_level", "Unknown")] += 1
+            priority_counter[result.get("alert_priority", {}).get("priority", "Unknown")] += 1
+            language_counter[result.get("multilingual_analysis", {}).get("language", "english_or_unknown")] += 1
+            if result.get("correlation", {}).get("correlated_alerts_count", 0) > 0:
+                correlated_alerts += 1
+            if result.get("correlation", {}).get("campaign_score") is not None:
+                campaign_scores.append(int(result["correlation"]["campaign_score"]))
+            if result.get("impact_assessment", {}).get("impact_score") is not None:
+                impact_scores.append(int(result["impact_assessment"]["impact_score"]))
+            for exposed_type in result.get("impact_assessment", {}).get("exposed_data_types", []):
+                data_type_counter[exposed_type] += 1
             for entity in result.get("entities", []):
                 entity_counter[entity.get("text", "").lower()] += 1
                 if entity.get("label") == "ORG":
                     org_counter[entity.get("text", "").lower()] += 1
+            for entity in result.get("enriched_entities", []):
+                if entity.get("label") == "DOMAIN":
+                    domain_counter[entity.get("text", "").lower()] += 1
 
         return {
             "total_alerts": len(alerts),
             "threat_distribution": dict(threat_counter),
             "risk_levels": dict(risk_counter),
+            "priority_distribution": dict(priority_counter),
+            "language_distribution": dict(language_counter),
+            "data_exposure_distribution": dict(data_type_counter),
             "entity_frequency": dict(entity_counter.most_common(20)),
             "organization_tracking": dict(org_counter.most_common(20)),
+            "domain_frequency": dict(domain_counter.most_common(20)),
+            "correlation_overview": {
+                "correlated_alerts": correlated_alerts,
+                "average_campaign_score": round(sum(campaign_scores) / len(campaign_scores), 2) if campaign_scores else 0,
+                "average_impact_score": round(sum(impact_scores) / len(impact_scores), 2) if impact_scores else 0,
+            },
             "mongo_connected": self.connected,
             "warning": self.warning,
         }

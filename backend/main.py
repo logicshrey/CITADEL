@@ -47,6 +47,12 @@ class AnalyzeResponse(BaseModel):
     primary_classification: dict[str, Any]
     secondary_classification: dict[str, Any]
     semantic_analysis: dict[str, Any]
+    enriched_entities: list[dict[str, str]]
+    multilingual_analysis: dict[str, Any]
+    slang_decoder: dict[str, Any]
+    correlation: dict[str, Any]
+    impact_assessment: dict[str, Any]
+    alert_priority: dict[str, Any]
 
 
 @app.on_event("startup")
@@ -69,6 +75,12 @@ def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
             "primary_classification": result["primary_classification"],
             "secondary_classification": result["secondary_classification"],
             "semantic_analysis": result["semantic_analysis"],
+            "enriched_entities": result["enriched_entities"],
+            "multilingual_analysis": result["multilingual_analysis"],
+            "slang_decoder": result["slang_decoder"],
+            "correlation": result["correlation"],
+            "impact_assessment": result["impact_assessment"],
+            "alert_priority": result["alert_priority"],
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc

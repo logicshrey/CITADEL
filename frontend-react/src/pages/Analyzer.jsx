@@ -55,7 +55,7 @@ function Analyzer() {
       return ''
     }
 
-    return `Threat ${result.threat_type} detected with ${result.risk_level} risk and ${(result.confidence_score * 100).toFixed(1)} percent confidence.`
+    return `Threat ${result.threat_type} detected with ${result.risk_level} risk, priority ${result.alert_priority?.priority || 'LOW'}, and ${(result.confidence_score * 100).toFixed(1)} percent confidence.`
   }, [result])
 
   const typedSummary = useTypedText(summaryText)
@@ -77,8 +77,9 @@ function Analyzer() {
     return [
       `Threat class resolved to ${result.threat_type}.`,
       `Risk level calibrated to ${result.risk_level}.`,
-      `Detected ${result.entities?.length || 0} named entities and ${Object.values(result.patterns || {}).flat().length} pattern hits.`,
-      'Model verdict committed to analyst console.',
+      `Detected ${result.entities?.length || 0} entities and ${Object.values(result.patterns || {}).flat().length} pattern hits.`,
+      `Correlation engine found ${result.correlation?.correlated_alerts_count || 0} linked alerts.`,
+      `Impact score ${result.impact_assessment?.impact_score || 0}; priority ${result.alert_priority?.priority || 'LOW'}.`,
     ]
   }, [loading, result])
 
@@ -136,7 +137,7 @@ function Analyzer() {
           className="glass-card neon-panel rounded-[32px] p-6"
         >
           <p className="text-xs uppercase tracking-[0.38em] text-[#00E5FF]">Neural Threat Analyzer</p>
-          <h2 className="mt-3 text-4xl font-semibold text-white">Deep-scan hostile chatter in real time</h2>
+          <h2 className="mt-3 text-4xl font-semibold text-white">Active Surveillance of High-Risk Channels</h2>
           <p className="mt-4 max-w-3xl text-sm text-slate-300">
             Interrogate suspicious marketplace posts, leak previews, phishing lures, and malware sale listings
             using the existing backend intelligence pipeline.
@@ -236,6 +237,23 @@ function Analyzer() {
               )}
             </div>
           </div>
+
+          {result ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="glass-card rounded-[24px] p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Priority</p>
+                <p className="mt-3 text-2xl font-semibold text-[#FFB4B4]">{result.alert_priority?.priority || 'LOW'}</p>
+              </div>
+              <div className="glass-card rounded-[24px] p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Campaign Score</p>
+                <p className="mt-3 text-2xl font-semibold text-[#00E5FF]">{result.correlation?.campaign_score || 0}</p>
+              </div>
+              <div className="glass-card rounded-[24px] p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Impact Score</p>
+                <p className="mt-3 text-2xl font-semibold text-[#FFC857]">{result.impact_assessment?.impact_score || 0}</p>
+              </div>
+            </div>
+          ) : null}
 
           {result ? <ThreatCard item={result} title="Threat intelligence result" /> : null}
         </div>
