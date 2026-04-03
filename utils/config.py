@@ -1,7 +1,12 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
+
 DATA_DIR = ROOT_DIR / "data"
 MODELS_DIR = ROOT_DIR / "models"
 
@@ -14,9 +19,9 @@ PRIMARY_MODEL_PATH = MODELS_DIR / "tfidf_logreg.joblib"
 SECONDARY_MODEL_DIR = MODELS_DIR / "distilbert_threat"
 METRICS_PATH = MODELS_DIR / "training_metrics.json"
 
-MONGO_URI = "mongodb+srv://logicshrey_db_user:rash1516@hackupcluster.kuuvhvf.mongodb.net/?appName=HackUpCluster"
-MONGO_DB_NAME = "dark_web_threat_intel"
-MONGO_COLLECTION = "analyses"
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "dark_web_threat_intel")
+MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "analyses")
 
 LABELS = [
     "Credential Leak",

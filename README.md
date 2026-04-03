@@ -60,6 +60,19 @@ python -m spacy download en_core_web_sm
 ```
 
 4. Make sure MongoDB is running if you want persistent storage.
+5. Create a `.env` file from `.env.example` and set your MongoDB values.
+
+```bash
+copy .env.example .env
+```
+
+Example `.env`:
+
+```env
+MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/?retryWrites=true&w=majority&appName=<app-name>
+MONGO_DB_NAME=dark_web_threat_intel
+MONGO_COLLECTION=analyses
+```
 
 ## Run The Backend
 
@@ -131,3 +144,4 @@ curl -X POST "http://127.0.0.1:8000/analyze" \
 - The primary classifier is fully validated and saved under `models/`.
 - The DistilBERT path is implemented as an optional secondary classifier and activates when the transformers stack is installed.
 - Alerts include threat type, detected patterns, entities, risk level, and timestamps.
+- Secrets such as MongoDB Atlas URIs should be stored in `.env`, not hardcoded in source files.
