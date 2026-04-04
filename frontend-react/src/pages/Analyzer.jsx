@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion as Motion } from 'framer-motion'
 import CircularProgress from '../components/CircularProgress'
+import ExternalIntelOverview from '../components/ExternalIntelOverview'
 import Loader from '../components/Loader'
 import TerminalConsole from '../components/TerminalConsole'
 import ThreatCard from '../components/ThreatCard'
@@ -67,7 +68,12 @@ function Analyzer() {
       return ''
     }
 
+    const collectionSummary = intelResponse.summary
     if (intelResponse.count > 0) {
+      if (collectionSummary) {
+        return `${intelResponse.demo_mode ? 'Generated' : 'Collected'} ${intelResponse.count} corroborated source finding${intelResponse.count > 1 ? 's' : ''} across ${collectionSummary.source_count || intelResponse.platforms?.length || 0} source${(collectionSummary.source_count || intelResponse.platforms?.length || 0) === 1 ? '' : 's'} for ${intelResponse.organization}. Combined priority is ${collectionSummary.combined_priority?.priority || 'LOW'} at score ${collectionSummary.combined_priority?.priority_score || 0}, with ${collectionSummary.estimated_total_records_label || 'unknown leak volume'}.`
+      }
+
       return `${intelResponse.demo_mode ? 'Generated' : 'Collected'} ${intelResponse.count} source intelligence result${intelResponse.count > 1 ? 's' : ''} across ${intelResponse.platforms?.length || 0} platform${intelResponse.platforms?.length === 1 ? '' : 's'} for ${intelResponse.organization}.`
     }
 
@@ -395,7 +401,7 @@ function Analyzer() {
           </div>
 
           {intelResponse ? (
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <div className="glass-card rounded-[24px] p-4">
                 <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Platforms</p>
                 <p className="mt-3 text-2xl font-semibold text-[#FFC857]">{intelResponse.platforms?.length || 0}</p>
@@ -403,6 +409,12 @@ function Analyzer() {
               <div className="glass-card rounded-[24px] p-4">
                 <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Findings</p>
                 <p className="mt-3 text-2xl font-semibold text-[#00E5FF]">{intelResponse.count || 0}</p>
+              </div>
+              <div className="glass-card rounded-[24px] p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Combined Priority</p>
+                <p className="mt-3 text-2xl font-semibold text-[#00FF9F]">
+                  {intelResponse.summary?.combined_priority?.priority || 'LOW'}
+                </p>
               </div>
               <div className="glass-card rounded-[24px] p-4">
                 <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Warnings</p>
@@ -432,6 +444,8 @@ function Analyzer() {
           </ul>
         </div>
       ) : null}
+
+      {intelResponse?.summary ? <ExternalIntelOverview summary={intelResponse.summary} /> : null}
 
       {intelResponse?.findings?.length ? (
         <div className="space-y-6">

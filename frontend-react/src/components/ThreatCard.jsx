@@ -15,6 +15,31 @@ function flattenPatterns(patterns = {}) {
     .map(([key, values]) => `${key}: ${values.join(', ')}`)
 }
 
+function formatBreakdown(entries = []) {
+  if (!entries.length) {
+    return 'No extracted leak data'
+  }
+
+  return entries
+    .map((entry) => {
+      const label = entry?.label || 'undetermined'
+      const count = typeof entry?.count === 'number' ? ` (${entry.count})` : ''
+      const samples = Array.isArray(entry?.samples) && entry.samples.length ? `: ${entry.samples.join(', ')}` : ''
+      return `${label}${count}${samples}`
+    })
+    .join(' | ')
+}
+
+function formatRelations(relations = []) {
+  if (!relations.length) {
+    return 'No corroborating source links'
+  }
+
+  return relations
+    .map((relation) => `${relation.source} (${relation.strength_score})`)
+    .join(', ')
+}
+
 function ThreatCard({ title = 'Threat Result', item, compact = false }) {
   const threatType = item?.threat_type ?? item?.results?.threat_type ?? 'Unknown'
   const riskLevel = item?.risk_level ?? item?.results?.risk_level ?? 'LOW'
@@ -30,6 +55,8 @@ function ThreatCard({ title = 'Threat Result', item, compact = false }) {
   const priority = item?.alert_priority ?? item?.results?.alert_priority ?? {}
   const source = item?.source ?? item?.results?.source ?? item?.results?.external_intelligence?.source
   const riskScore = item?.risk_score ?? item?.results?.risk_score ?? item?.results?.external_intelligence?.risk_score
+  const externalIntel = item?.external_intelligence ?? item?.results?.external_intelligence ?? {}
+  const hasExternalIntel = Boolean(externalIntel?.source)
 
   return (
     <Motion.article
@@ -75,7 +102,7 @@ function ThreatCard({ title = 'Threat Result', item, compact = false }) {
           </p>
         )}
 
-        {!compact && (
+        {!compact && !hasExternalIntel && (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
               <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Entities</p>
@@ -103,6 +130,54 @@ function ThreatCard({ title = 'Threat Result', item, compact = false }) {
               <p className="mt-2 text-sm text-slate-200">
                 {impact?.business_risk ? `${impact.business_risk} (${impact.estimated_records})` : 'Impact not estimated'}
               </p>
+            </div>
+          </div>
+        )}
+
+        {!compact && hasExternalIntel && (
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Leak Data</p>
+                <p className="mt-2 text-sm text-slate-200">{formatBreakdown(externalIntel.data_breakdown || [])}</p>
+              </div>
+
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Exposure Size</p>
+                <p className="mt-2 text-sm text-slate-200">
+                  {externalIntel.estimated_records || 'Amount not disclosed by the source'}
+                </p>
+                <p className="mt-2 text-xs uppercase tracking-[0.22em] text-slate-500">
+                  Evidence items {externalIntel.volume || 0}
+                </p>
+              </div>
+
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Affected Assets</p>
+                <p className="mt-2 text-sm text-slate-200">
+                  {formatList(externalIntel.affected_assets || [], 'No affected assets extracted')}
+                </p>
+              </div>
+
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Cross-source Links</p>
+                <p className="mt-2 text-sm text-slate-200">{formatRelations(externalIntel.related_sources || [])}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Leak Surface</p>
+                <p className="mt-2 text-sm text-slate-200">
+                  {formatList(externalIntel.source_locations || [], 'No source location metadata')}
+                </p>
+              </div>
+              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+                <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Matched Indicators</p>
+                <p className="mt-2 text-sm text-slate-200">
+                  {formatList(externalIntel.matched_indicators || [], 'No stable indicators extracted')}
+                </p>
+              </div>
             </div>
           </div>
         )}

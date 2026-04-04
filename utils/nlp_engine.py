@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import math
 import re
 from datetime import datetime, timezone
@@ -179,10 +180,16 @@ class ThreatIntelligenceEngine:
             findings.append(result)
             recent_alerts.append({"results": result})
 
+        summary = self._build_external_collection_summary(
+            query=query,
+            findings=findings,
+            collection=collection,
+        )
         return {
             "organization": collection.get("organization", query),
             "platforms": collection.get("platforms", []),
             "findings": findings,
+            "summary": summary,
             "warnings": collection.get("warnings", []),
             "generated_at": collection.get("generated_at"),
             "demo_mode": bool(collection.get("demo_mode", demo)),
@@ -401,11 +408,20 @@ class ThreatIntelligenceEngine:
                 "platforms": list(platforms or [finding.get("source")]),
                 "emails": list(finding.get("emails", [])),
                 "usernames": list(finding.get("usernames", [])),
+                "data_types": list(finding.get("data_types", [])),
+                "data_breakdown": list(finding.get("data_breakdown", [])),
                 "type": threat_type,
                 "risk_score": risk_score,
                 "source": finding.get("source"),
                 "date_found": finding.get("date_found"),
                 "volume": int(finding.get("volume", 0)),
+                "estimated_record_count": finding.get("estimated_record_count"),
+                "estimated_records": finding.get("estimated_records"),
+                "affected_assets": list(finding.get("affected_assets", [])),
+                "matched_indicators": list(finding.get("matched_indicators", [])),
+                "source_locations": list(finding.get("source_locations", [])),
+                "summary": finding.get("summary"),
+                "related_sources": [],
                 "demo_mode": any(item.get("metadata", {}).get("demo") for item in finding.get("raw_items", [])),
                 "raw_items": list(finding.get("raw_items", [])),
             },
@@ -423,6 +439,12 @@ class ThreatIntelligenceEngine:
             f"External intelligence source {finding.get('source', 'Unknown')} matched query {query}.",
             f"Risk score {risk_score:.2f} was derived from platform reputation, exposed data type, and finding volume.",
         ]
+        if finding.get("estimated_records"):
+            result["explanation"].append(f"Estimated exposure size: {finding.get('estimated_records')}.")
+        if finding.get("source_locations"):
+            result["explanation"].append(
+                f"Observed on: {', '.join(list(finding.get('source_locations', []))[:3])}."
+            )
         if result["demo_mode"]:
             result["explanation"].append("Demo mode generated this synthetic finding for safe UI validation.")
 
@@ -437,6 +459,250 @@ class ThreatIntelligenceEngine:
         result["impact_assessment"] = impact_assessment
         result["alert_priority"] = alert_priority
         return result
+
+    def _build_external_collection_summary(
+        self,
+        query: str,
+        findings: list[dict[str, Any]],
+        collection: dict[str, Any],
+    ) -> dict[str, Any]:
+        platforms = list(collection.get("platforms", []))
+        demo_mode = bool(collection.get("demo_mode", False))
+        generated_at = collection.get("generated_at")
+
+        if not findings:
+            return {
+                "organization": collection.get("organization", query),
+                "platforms": platforms,
+                "source_count": 0,
+                "total_findings": 0,
+                "total_evidence_items": 0,
+                "estimated_total_records": None,
+                "estimated_total_records_label": "No leak volume identified",
+                "combined_priority": {
+                    "priority": "LOW",
+                    "priority_score": 0,
+                    "rationale": ["No source findings were strong enough to build a correlated leak summary."],
+                },
+                "data_type_breakdown": [],
+                "affected_assets": [],
+                "recurring_indicators": [],
+                "cross_source_relations": [],
+                "source_breakdown": [],
+                "generated_at": generated_at,
+                "demo_mode": demo_mode,
+            }
+
+        data_type_counter: Counter[str] = Counter()
+        asset_counter: Counter[str] = Counter()
+        indicator_counter: Counter[str] = Counter()
+        source_breakdown: list[dict[str, Any]] = []
+        total_evidence_items = 0
+        total_records = 0
+        has_numeric_total = False
+
+        for result in findings:
+            external = result.get("external_intelligence", {})
+            data_breakdown = list(external.get("data_breakdown", []))
+            for entry in data_breakdown:
+                label = str(entry.get("label", "undetermined"))
+                count = int(entry.get("count", 0) or 0)
+                data_type_counter[label] += max(1, count) if label != "undetermined" else 0
+
+            affected_assets = list(external.get("affected_assets", []))
+            matched_indicators = list(external.get("matched_indicators", []))
+            for asset in affected_assets:
+                asset_counter[str(asset)] += 1
+            for indicator in matched_indicators:
+                indicator_counter[str(indicator)] += 1
+
+            estimated_record_count = external.get("estimated_record_count")
+            if isinstance(estimated_record_count, int):
+                has_numeric_total = True
+                total_records += estimated_record_count
+
+            total_evidence_items += int(external.get("volume", 0) or 0)
+            source_breakdown.append(
+                {
+                    "source": external.get("source") or result.get("source"),
+                    "threat_type": result.get("threat_type"),
+                    "priority": result.get("alert_priority", {}).get("priority", "LOW"),
+                    "priority_score": int(result.get("alert_priority", {}).get("priority_score", 0) or 0),
+                    "risk_level": result.get("risk_level", "LOW"),
+                    "risk_score": float(result.get("risk_score", 0.0) or 0.0),
+                    "confidence_score": float(result.get("confidence_score", 0.0) or 0.0),
+                    "estimated_record_count": estimated_record_count if isinstance(estimated_record_count, int) else None,
+                    "estimated_records": external.get("estimated_records") or "Amount not disclosed by the source",
+                    "data_types": list(external.get("data_types", [])),
+                    "data_breakdown": data_breakdown,
+                    "affected_assets": affected_assets,
+                    "matched_indicators": matched_indicators,
+                    "source_locations": list(external.get("source_locations", [])),
+                    "summary": external.get("summary") or result.get("impact_assessment", {}).get("summary"),
+                    "timestamp": result.get("timestamp"),
+                    "evidence_count": int(external.get("volume", 0) or 0),
+                    "correlation_score": int(result.get("correlation", {}).get("campaign_score", 0) or 0),
+                    "_indicator_keys": {str(item).strip().lower() for item in matched_indicators if str(item).strip()},
+                    "_asset_keys": {str(item).strip().lower() for item in affected_assets if str(item).strip()},
+                    "_data_type_keys": {str(item).strip().lower() for item in external.get("data_types", []) if str(item).strip()},
+                }
+            )
+
+        cross_source_relations = self._build_cross_source_relations(source_breakdown)
+        relation_map: dict[str, list[dict[str, Any]]] = {}
+        for relation in cross_source_relations:
+            left, right = relation["sources"]
+            relation_map.setdefault(left, []).append(
+                {
+                    "source": right,
+                    "strength_score": relation["strength_score"],
+                    "summary": relation["summary"],
+                    "shared_indicators": relation["shared_indicators"],
+                    "shared_assets": relation["shared_assets"],
+                }
+            )
+            relation_map.setdefault(right, []).append(
+                {
+                    "source": left,
+                    "strength_score": relation["strength_score"],
+                    "summary": relation["summary"],
+                    "shared_indicators": relation["shared_indicators"],
+                    "shared_assets": relation["shared_assets"],
+                }
+            )
+
+        for result in findings:
+            external = result.get("external_intelligence", {})
+            source_name = str(external.get("source") or result.get("source") or "")
+            external["related_sources"] = relation_map.get(source_name, [])[:4]
+
+        priority_scores = [entry["priority_score"] for entry in source_breakdown]
+        max_priority = max(priority_scores) if priority_scores else 0
+        avg_priority = sum(priority_scores) / len(priority_scores) if priority_scores else 0
+        source_bonus = min(12, max(0, len(source_breakdown) - 1) * 4)
+        relation_bonus = min(
+            18,
+            (len(cross_source_relations[:3]) * 4)
+            + max((relation["strength_score"] for relation in cross_source_relations), default=0) // 20,
+        )
+        exposure_bonus = 0
+        if has_numeric_total:
+            if total_records >= 10000:
+                exposure_bonus = 12
+            elif total_records >= 1000:
+                exposure_bonus = 9
+            elif total_records >= 100:
+                exposure_bonus = 6
+            elif total_records >= 10:
+                exposure_bonus = 3
+        else:
+            exposure_bonus = min(8, len(indicator_counter))
+
+        combined_priority_score = min(
+            100,
+            int(round((max_priority * 0.5) + (avg_priority * 0.2) + source_bonus + relation_bonus + exposure_bonus)),
+        )
+        combined_priority = {
+            "priority": self._priority_from_score(combined_priority_score),
+            "priority_score": combined_priority_score,
+            "rationale": [
+                f"Strongest source finding contributed {max_priority} priority points.",
+                f"Average source priority contributed {int(round(avg_priority * 0.2))} blended points.",
+                f"Cross-source corroboration contributed {relation_bonus} points across {len(cross_source_relations)} linked relation(s).",
+                f"Exposure scale contributed {exposure_bonus} points.",
+            ],
+        }
+
+        total_records_label = "No leak volume identified"
+        if has_numeric_total:
+            total_records_label = f"Approximately {total_records:,} records across all sources"
+        elif indicator_counter:
+            total_records_label = f"At least {len(indicator_counter):,} exposed indicator(s) observed across all sources"
+        elif total_evidence_items:
+            total_records_label = f"{total_evidence_items:,} evidence item(s) observed across all sources"
+
+        sanitized_breakdown = []
+        for entry in source_breakdown:
+            sanitized_breakdown.append(
+                {
+                    key: value
+                    for key, value in entry.items()
+                    if not key.startswith("_")
+                }
+            )
+
+        return {
+            "organization": collection.get("organization", query),
+            "platforms": platforms,
+            "source_count": len(source_breakdown),
+            "total_findings": len(findings),
+            "total_evidence_items": total_evidence_items,
+            "estimated_total_records": total_records if has_numeric_total else None,
+            "estimated_total_records_label": total_records_label,
+            "combined_priority": combined_priority,
+            "data_type_breakdown": [
+                {"label": label, "count": count}
+                for label, count in data_type_counter.most_common(8)
+            ],
+            "affected_assets": [asset for asset, _ in asset_counter.most_common(10)],
+            "recurring_indicators": [indicator for indicator, _ in indicator_counter.most_common(12)],
+            "cross_source_relations": cross_source_relations[:6],
+            "source_breakdown": sanitized_breakdown,
+            "generated_at": generated_at,
+            "demo_mode": demo_mode,
+        }
+
+    def _build_cross_source_relations(self, source_breakdown: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        relations: list[dict[str, Any]] = []
+        for index, left in enumerate(source_breakdown):
+            for right in source_breakdown[index + 1 :]:
+                shared_indicators = sorted(left["_indicator_keys"].intersection(right["_indicator_keys"]))[:6]
+                shared_assets = sorted(left["_asset_keys"].intersection(right["_asset_keys"]))[:4]
+                shared_data_types = sorted(left["_data_type_keys"].intersection(right["_data_type_keys"]))[:4]
+                same_threat_type = left["threat_type"] == right["threat_type"]
+
+                strength_score = (
+                    len(shared_indicators) * 18
+                    + len(shared_assets) * 12
+                    + len(shared_data_types) * 6
+                    + (10 if same_threat_type else 0)
+                )
+                if strength_score < 12:
+                    continue
+
+                relation_reasons = []
+                if shared_indicators:
+                    relation_reasons.append("shared exposed indicators")
+                if shared_assets:
+                    relation_reasons.append("same affected assets")
+                if shared_data_types:
+                    relation_reasons.append("matching leak data types")
+                if same_threat_type:
+                    relation_reasons.append(f"same threat type ({left['threat_type']})")
+
+                relations.append(
+                    {
+                        "sources": [left["source"], right["source"]],
+                        "strength_score": min(100, strength_score),
+                        "shared_indicators": shared_indicators,
+                        "shared_assets": shared_assets,
+                        "shared_data_types": shared_data_types,
+                        "summary": "Linked through " + ", ".join(relation_reasons) + ".",
+                    }
+                )
+
+        relations.sort(key=lambda item: item["strength_score"], reverse=True)
+        return relations
+
+    @staticmethod
+    def _priority_from_score(priority_score: int) -> str:
+        if priority_score >= 85:
+            return "CRITICAL"
+        if priority_score >= 65:
+            return "HIGH"
+        if priority_score >= 40:
+            return "MEDIUM"
+        return "LOW"
 
     def simulate_alerts(self, count: int = 5) -> list[dict[str, Any]]:
         results = []

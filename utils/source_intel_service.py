@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import re
 import time
@@ -31,6 +32,7 @@ from utils.config import (
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 HANDLE_PATTERN = re.compile(r"(?<!\w)@([A-Za-z0-9_]{3,32})\b")
 DOMAIN_PATTERN = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b")
+IP_ADDRESS_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 USERNAME_ASSIGNMENT_PATTERN = re.compile(r"(?i)\b(?:username|user|login|handle)\s*[:=]\s*([A-Za-z0-9._@-]{3,64})")
 PASSWORD_SIGNAL_PATTERN = re.compile(r"(?i)\b(?:password|passwd|pwd|hash|hashes)\b")
 PHONE_SIGNAL_PATTERN = re.compile(r"(?i)\b(?:phone|mobile|msisdn)\b")
@@ -61,10 +63,18 @@ class AggregatedFinding:
     text: str
     emails: list[str]
     usernames: list[str]
+    data_types: list[str]
+    data_breakdown: list[dict[str, Any]]
     type: str
     risk_score: float
     date_found: str
     volume: int
+    estimated_record_count: int | None
+    estimated_records: str
+    affected_assets: list[str]
+    matched_indicators: list[str]
+    source_locations: list[str]
+    summary: str
     raw_items: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -689,19 +699,29 @@ class ExternalIntelligenceService:
         findings: list[AggregatedFinding] = []
         warnings: list[str] = []
 
-        for client in self.clients:
-            try:
-                hits = client.collect(normalized_query)
-            except IntelligenceSourceError as exc:
-                warnings.append(str(exc))
-                continue
+        # Run source lookups concurrently so slower providers do not block the whole UI flow.
+        with ThreadPoolExecutor(max_workers=len(self.clients)) as executor:
+            future_to_client = {
+                executor.submit(self._collect_client_hits, client, normalized_query): client for client in self.clients
+            }
+            for future in as_completed(future_to_client):
+                try:
+                    client_name, hits, warning = future.result()
+                except Exception as exc:
+                    client = future_to_client[future]
+                    warnings.append(f"{client.name} collection failed unexpectedly: {exc}")
+                    continue
 
-            hits = [hit for hit in hits if self._is_relevant_hit(normalized_query, hit)]
-            if not hits:
-                warnings.append(f"{client.name} returned no high-confidence threat-relevant hits for query {normalized_query}.")
-                continue
+                if warning:
+                    warnings.append(warning)
+                    continue
+                if not hits:
+                    warnings.append(
+                        f"{client_name} returned no high-confidence threat-relevant hits for query {normalized_query}."
+                    )
+                    continue
 
-            findings.append(self._aggregate_hits(normalized_query, client.name, hits))
+                findings.append(self._aggregate_hits(normalized_query, client_name, hits))
 
         platforms = [finding.source for finding in findings]
         for finding in findings:
@@ -714,6 +734,15 @@ class ExternalIntelligenceService:
             "warnings": warnings,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _collect_client_hits(self, client: BaseIntelClient, query: str) -> tuple[str, list[RawSourceHit], str | None]:
+        try:
+            hits = client.collect(query)
+        except IntelligenceSourceError as exc:
+            return client.name, [], str(exc)
+
+        filtered_hits = [hit for hit in hits if self._is_relevant_hit(query, hit)]
+        return client.name, filtered_hits, None
 
     @staticmethod
     def build_demo_collection(query: str) -> dict[str, Any]:
@@ -734,10 +763,26 @@ class ExternalIntelligenceService:
                 ),
                 "emails": [f"admin@{safe_domain}", f"ops@{safe_domain}"],
                 "usernames": [f"{ExternalIntelligenceService._slugify(normalized_query)}_ops", "sessionbroker_demo"],
+                "data_types": ["credentials", "email addresses", "usernames"],
+                "data_breakdown": [
+                    {"label": "email addresses", "count": 2, "samples": [f"admin@{safe_domain}", f"ops@{safe_domain}"]},
+                    {
+                        "label": "usernames",
+                        "count": 2,
+                        "samples": [f"{ExternalIntelligenceService._slugify(normalized_query)}_ops", "sessionbroker_demo"],
+                    },
+                    {"label": "credentials", "count": 1, "samples": ["combo access advertised"]},
+                ],
                 "type": "Credential Leak",
                 "risk_score": 0.82,
                 "date_found": date_found,
                 "volume": 3,
+                "estimated_record_count": 25,
+                "estimated_records": "Approximately 25 exposed account records",
+                "affected_assets": [safe_domain, normalized_query],
+                "matched_indicators": [f"admin@{safe_domain}", f"ops@{safe_domain}", f"{ExternalIntelligenceService._slugify(normalized_query)}_ops"],
+                "source_locations": ["telegram_demo_channel"],
+                "summary": f"Telegram chatter advertises account combo access tied to {safe_domain}.",
                 "raw_items": [
                     {
                         "text": f"Demo Telegram post referencing {normalized_query} account combo access.",
@@ -756,10 +801,26 @@ class ExternalIntelligenceService:
                 ),
                 "emails": [f"support@{safe_domain}"],
                 "usernames": [f"{ExternalIntelligenceService._slugify(normalized_query)}_support"],
+                "data_types": ["email addresses", "usernames", "bulk personal records"],
+                "data_breakdown": [
+                    {"label": "email addresses", "count": 1, "samples": [f"support@{safe_domain}"]},
+                    {
+                        "label": "usernames",
+                        "count": 1,
+                        "samples": [f"{ExternalIntelligenceService._slugify(normalized_query)}_support"],
+                    },
+                    {"label": "bulk personal records", "count": 1, "samples": ["support records referenced"]},
+                ],
                 "type": "Database Dump",
                 "risk_score": 0.74,
                 "date_found": date_found,
                 "volume": 2,
+                "estimated_record_count": 2400,
+                "estimated_records": "Approximately 2,400 customer support records",
+                "affected_assets": [safe_domain, normalized_query],
+                "matched_indicators": [f"support@{safe_domain}", f"{ExternalIntelligenceService._slugify(normalized_query)}_support"],
+                "source_locations": ["paste:demo-paste-001"],
+                "summary": f"Paste content references a database-style dump tied to {safe_domain}.",
                 "raw_items": [
                     {
                         "text": f"Demo Pastebin text containing synthetic records for {normalized_query}.",
@@ -778,10 +839,27 @@ class ExternalIntelligenceService:
                 ),
                 "emails": [f"security@{safe_domain}"],
                 "usernames": [f"{ExternalIntelligenceService._slugify(normalized_query)}_sec"],
+                "data_types": ["credentials", "email addresses", "hashed passwords"],
+                "data_breakdown": [
+                    {"label": "email addresses", "count": 1, "samples": [f"security@{safe_domain}"]},
+                    {
+                        "label": "usernames",
+                        "count": 1,
+                        "samples": [f"{ExternalIntelligenceService._slugify(normalized_query)}_sec"],
+                    },
+                    {"label": "credentials", "count": 1, "samples": ["recycled credential pair detected"]},
+                    {"label": "hashed passwords", "count": 1, "samples": ["hash references detected"]},
+                ],
                 "type": "Credential Leak",
                 "risk_score": 0.91,
                 "date_found": date_found,
                 "volume": 4,
+                "estimated_record_count": 6400,
+                "estimated_records": "Approximately 6,400 breached credential records",
+                "affected_assets": [safe_domain, normalized_query],
+                "matched_indicators": [f"security@{safe_domain}", f"{ExternalIntelligenceService._slugify(normalized_query)}_sec"],
+                "source_locations": ["dehashed_demo"],
+                "summary": f"Dehashed-style breach evidence shows credential reuse impacting {safe_domain}.",
                 "raw_items": [
                     {
                         "text": f"Demo Dehashed record for {normalized_query}.",
@@ -804,9 +882,22 @@ class ExternalIntelligenceService:
     def _aggregate_hits(self, organization: str, source: str, hits: list[RawSourceHit]) -> AggregatedFinding:
         emails = self._unique(self._extract_emails(hits))
         usernames = self._unique(self._extract_usernames(hits))
+        domains = self._unique(self._extract_domains(hits))
+        ip_addresses = self._unique(self._extract_ip_addresses(hits))
         combined_text = "\n\n".join(hit.text for hit in hits if hit.text.strip())
         breach_type = self._classify_breach_type(combined_text, hits)
         data_types = self._detect_data_types(combined_text, emails, usernames, hits)
+        data_breakdown = self._build_data_breakdown(
+            text=combined_text,
+            emails=emails,
+            usernames=usernames,
+            domains=domains,
+            ip_addresses=ip_addresses,
+        )
+        estimated_record_count, estimated_records = self._estimate_exposure_amount(hits, emails, usernames, domains)
+        affected_assets = self._extract_affected_assets(organization, hits, domains)
+        matched_indicators = self._extract_matched_indicators(emails, usernames, domains, ip_addresses)
+        source_locations = self._extract_source_locations(source, hits)
         risk_score = self._calculate_risk_score(source, data_types, len(hits))
         dates = [hit.date_found for hit in hits if hit.date_found]
 
@@ -817,10 +908,18 @@ class ExternalIntelligenceService:
             text=combined_text,
             emails=emails,
             usernames=usernames,
+            data_types=data_types,
+            data_breakdown=data_breakdown,
             type=breach_type,
             risk_score=risk_score,
             date_found=min(dates) if dates else datetime.now(timezone.utc).date().isoformat(),
             volume=len(hits),
+            estimated_record_count=estimated_record_count,
+            estimated_records=estimated_records,
+            affected_assets=affected_assets,
+            matched_indicators=matched_indicators,
+            source_locations=source_locations,
+            summary=self._build_finding_summary(source, breach_type, data_types, estimated_records, affected_assets),
             raw_items=[
                 {
                     "text": hit.text,
@@ -863,9 +962,8 @@ class ExternalIntelligenceService:
         results: list[str] = []
         for hit in hits:
             results.extend(EMAIL_PATTERN.findall(hit.text))
-            for value in hit.metadata.values():
-                if isinstance(value, str):
-                    results.extend(EMAIL_PATTERN.findall(value))
+            for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
+                results.extend(EMAIL_PATTERN.findall(value))
         return results
 
     @staticmethod
@@ -877,7 +975,28 @@ class ExternalIntelligenceService:
             username = hit.metadata.get("username")
             if isinstance(username, str) and username:
                 results.append(username)
+            for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
+                results.extend(HANDLE_PATTERN.findall(value))
+                results.extend(USERNAME_ASSIGNMENT_PATTERN.findall(value))
         return [username.lstrip("@") for username in results if username]
+
+    @staticmethod
+    def _extract_domains(hits: list[RawSourceHit]) -> list[str]:
+        results: list[str] = []
+        for hit in hits:
+            results.extend(DOMAIN_PATTERN.findall(hit.text))
+            for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
+                results.extend(DOMAIN_PATTERN.findall(value))
+        return results
+
+    @staticmethod
+    def _extract_ip_addresses(hits: list[RawSourceHit]) -> list[str]:
+        results: list[str] = []
+        for hit in hits:
+            results.extend(IP_ADDRESS_PATTERN.findall(hit.text))
+            for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
+                results.extend(IP_ADDRESS_PATTERN.findall(value))
+        return results
 
     @staticmethod
     def _classify_breach_type(text: str, hits: list[RawSourceHit]) -> str:
@@ -922,12 +1041,153 @@ class ExternalIntelligenceService:
         return ExternalIntelligenceService._unique(data_types) or ["undetermined"]
 
     @staticmethod
+    def _build_data_breakdown(
+        text: str,
+        emails: list[str],
+        usernames: list[str],
+        domains: list[str],
+        ip_addresses: list[str],
+    ) -> list[dict[str, Any]]:
+        lowered = text.lower()
+        breakdown: list[dict[str, Any]] = []
+
+        if emails:
+            breakdown.append({"label": "email addresses", "count": len(emails), "samples": emails[:3]})
+        if usernames:
+            breakdown.append({"label": "usernames", "count": len(usernames), "samples": usernames[:3]})
+        if domains:
+            breakdown.append({"label": "domains", "count": len(domains), "samples": domains[:3]})
+        if ip_addresses:
+            breakdown.append({"label": "ip addresses", "count": len(ip_addresses), "samples": ip_addresses[:3]})
+        if PASSWORD_SIGNAL_PATTERN.search(lowered):
+            breakdown.append({"label": "credentials", "count": 1, "samples": ["password or login material detected"]})
+        if "hash" in lowered:
+            breakdown.append({"label": "hashed passwords", "count": 1, "samples": ["hash material referenced"]})
+        if PHONE_SIGNAL_PATTERN.search(lowered):
+            breakdown.append({"label": "phone numbers", "count": 1, "samples": ["phone or mobile data referenced"]})
+
+        return breakdown or [{"label": "undetermined", "count": 0, "samples": ["No clear exposed data type extracted"]}]
+
+    @staticmethod
+    def _estimate_exposure_amount(
+        hits: list[RawSourceHit],
+        emails: list[str],
+        usernames: list[str],
+        domains: list[str],
+    ) -> tuple[int | None, str]:
+        numeric_row_estimates = [
+            int(value)
+            for hit in hits
+            for value in (
+                hit.metadata.get("dataset_rows"),
+                hit.metadata.get("rows"),
+                hit.metadata.get("record_count"),
+            )
+            if isinstance(value, int) and value > 0
+        ]
+        numeric_file_estimates = [
+            int(value)
+            for hit in hits
+            for value in (hit.metadata.get("dataset_files"), hit.metadata.get("files"))
+            if isinstance(value, int) and value > 0
+        ]
+
+        if numeric_row_estimates:
+            estimated_count = sum(numeric_row_estimates)
+            file_suffix = ""
+            if numeric_file_estimates:
+                file_suffix = f" across {sum(numeric_file_estimates):,} file(s)"
+            return estimated_count, f"Approximately {estimated_count:,} records{file_suffix}"
+
+        indicator_count = max(len(emails) + len(usernames), len(emails) + len(domains))
+        if indicator_count > 0:
+            return indicator_count, f"At least {indicator_count:,} exposed identifier(s)"
+
+        if hits:
+            return len(hits), f"{len(hits):,} leaked artifact(s) observed"
+
+        return None, "Amount not disclosed by the source"
+
+    @staticmethod
+    def _extract_affected_assets(organization: str, hits: list[RawSourceHit], domains: list[str]) -> list[str]:
+        assets = list(domains)
+        normalized_query = str(organization or "").strip().lower()
+        for hit in hits:
+            for key in ("host", "repository", "name", "database_name", "event_source"):
+                value = hit.metadata.get(key)
+                if isinstance(value, str) and value.strip():
+                    assets.append(value.strip())
+        if normalized_query and "." in normalized_query and " " not in normalized_query:
+            assets.append(normalized_query)
+        return ExternalIntelligenceService._unique(assets)[:8]
+
+    @staticmethod
+    def _extract_matched_indicators(
+        emails: list[str],
+        usernames: list[str],
+        domains: list[str],
+        ip_addresses: list[str],
+    ) -> list[str]:
+        return ExternalIntelligenceService._unique([*emails, *usernames, *domains, *ip_addresses])[:12]
+
+    @staticmethod
+    def _extract_source_locations(source: str, hits: list[RawSourceHit]) -> list[str]:
+        locations: list[str] = []
+        for hit in hits:
+            metadata = hit.metadata
+            repository = metadata.get("repository")
+            path = metadata.get("path")
+            if isinstance(repository, str) and repository:
+                locations.append(f"{repository}:{path}" if isinstance(path, str) and path else repository)
+            for key in ("html_url", "host", "bucket", "name", "title", "event_source"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.strip():
+                    locations.append(value.strip())
+            if source == "Telegram":
+                chat_id = metadata.get("chat_id")
+                if chat_id:
+                    locations.append(f"channel:{chat_id}")
+            paste_key = metadata.get("paste_key")
+            if isinstance(paste_key, str) and paste_key:
+                locations.append(f"paste:{paste_key}")
+        return ExternalIntelligenceService._unique(locations)[:6]
+
+    @staticmethod
+    def _build_finding_summary(
+        source: str,
+        breach_type: str,
+        data_types: list[str],
+        estimated_records: str,
+        affected_assets: list[str],
+    ) -> str:
+        asset_preview = ", ".join(affected_assets[:3]) if affected_assets else "unknown assets"
+        return (
+            f"{source} indicates a {breach_type.lower()} exposing {', '.join(data_types[:3])} "
+            f"with {estimated_records.lower()} affecting {asset_preview}."
+        )
+
+    @staticmethod
     def _calculate_risk_score(source: str, data_types: list[str], volume: int) -> float:
         platform_score = PLATFORM_REPUTATION_SCORES.get(source, 0.45)
         sensitivity_score = max(DATA_SENSITIVITY_SCORES.get(data_type, 0.35) for data_type in data_types)
         volume_score = min(1.0, math.log1p(max(1, volume)) / math.log(12))
         risk_score = (platform_score * 0.4) + (sensitivity_score * 0.4) + (volume_score * 0.2)
         return round(min(1.0, risk_score), 2)
+
+    @staticmethod
+    def _flatten_metadata_text(value: Any) -> list[str]:
+        results: list[str] = []
+        if isinstance(value, str):
+            results.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                results.extend(ExternalIntelligenceService._flatten_metadata_text(nested))
+        elif isinstance(value, (list, tuple, set)):
+            for nested in value:
+                results.extend(ExternalIntelligenceService._flatten_metadata_text(nested))
+        elif value is not None:
+            results.append(str(value))
+        return results
 
     @staticmethod
     def _unique(values: list[str]) -> list[str]:
