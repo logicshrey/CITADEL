@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -16,6 +17,7 @@ from utils.config import (
     GITHUB_TOKEN,
     INTELX_API_BASE,
     INTELX_API_KEY,
+    LEAKIX_API_KEY,
     PASTEBIN_API_KEY,
     PLATFORM_REPUTATION_SCORES,
     PUBLIC_INTEL_MAX_ITEMS,
@@ -498,6 +500,177 @@ class IntelXIntelClient(BaseIntelClient):
         return datetime.now(timezone.utc).date().isoformat()
 
 
+class LeakIXIntelClient(BaseIntelClient):
+    name = "LeakIX"
+    search_url = "https://leakix.net/search"
+    domain_url = "https://leakix.net/domain"
+
+    def collect(self, query: str) -> list[RawSourceHit]:
+        if not LEAKIX_API_KEY:
+            raise IntelligenceSourceError("LeakIX API key is not configured.")
+
+        session = requests.Session()
+        session.headers.update(
+            {
+                "api-key": LEAKIX_API_KEY,
+                "accept": "application/json",
+            }
+        )
+
+        hits = []
+        if "." in str(query or "") and " " not in str(query or ""):
+            hits.extend(self._domain_lookup(session, query))
+            if hits:
+                return hits[: PUBLIC_INTEL_MAX_ITEMS * 2]
+        for index, scope in enumerate(("leak", "service")):
+            if index > 0:
+                # LeakIX documents an effective rate limit of about one request per second.
+                time.sleep(1.1)
+            hits.extend(self._search_scope(session, query, scope))
+        return hits[: PUBLIC_INTEL_MAX_ITEMS * 2]
+
+    def _domain_lookup(self, session: requests.Session, query: str) -> list[RawSourceHit]:
+        response = session.get(
+            f"{self.domain_url}/{query}",
+            timeout=PUBLIC_INTEL_REQUEST_TIMEOUT,
+        )
+        if response.status_code == 429:
+            limited_for = response.headers.get("x-limited-for", "unknown")
+            raise IntelligenceSourceError(f"LeakIX rate limited the request. Retry after {limited_for}.")
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            raise IntelligenceSourceError(f"LeakIX domain lookup failed: {exc}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            body_preview = response.text[:200].strip()
+            raise IntelligenceSourceError(
+                f"LeakIX domain lookup returned a non-JSON response: {body_preview or 'empty body'}"
+            ) from exc
+
+        hits: list[RawSourceHit] = []
+        for scope_key, scope in (("Leaks", "leak"), ("Services", "service")):
+            items = payload.get(scope_key) or []
+            for item in items[:PUBLIC_INTEL_MAX_ITEMS]:
+                text = self._item_to_text(item, query, scope)
+                hits.append(
+                    RawSourceHit(
+                        source=self.name,
+                        text=text,
+                        date_found=self._resolve_item_date(item),
+                        metadata={
+                            "search_type": "leakix",
+                            "scope": scope,
+                            "host": item.get("host"),
+                            "ip": item.get("ip"),
+                            "protocol": item.get("protocol"),
+                            "event_type": item.get("event_type"),
+                            "event_source": item.get("event_source"),
+                            "summary": item.get("summary"),
+                            "dataset_rows": item.get("leak", {}).get("dataset", {}).get("rows"),
+                            "dataset_files": item.get("leak", {}).get("dataset", {}).get("files"),
+                        },
+                    )
+                )
+        return hits
+
+    def _search_scope(self, session: requests.Session, query: str, scope: str) -> list[RawSourceHit]:
+        response = session.get(
+            self.search_url,
+            params={
+                "scope": scope,
+                "page": 0,
+                "q": self._build_query(query, scope),
+            },
+            timeout=PUBLIC_INTEL_REQUEST_TIMEOUT,
+        )
+        if response.status_code == 429:
+            limited_for = response.headers.get("x-limited-for", "unknown")
+            raise IntelligenceSourceError(f"LeakIX rate limited the request. Retry after {limited_for}.")
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            raise IntelligenceSourceError(f"LeakIX {scope} search failed: {exc}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            body_preview = response.text[:200].strip()
+            raise IntelligenceSourceError(
+                f"LeakIX {scope} search returned a non-JSON response: {body_preview or 'empty body'}"
+            ) from exc
+        if not isinstance(payload, list):
+            return []
+
+        hits: list[RawSourceHit] = []
+        for item in payload[:PUBLIC_INTEL_MAX_ITEMS]:
+            text = self._item_to_text(item, query, scope)
+            hits.append(
+                RawSourceHit(
+                    source=self.name,
+                    text=text,
+                    date_found=self._resolve_item_date(item),
+                    metadata={
+                        "search_type": "leakix",
+                        "scope": scope,
+                        "host": item.get("host"),
+                        "ip": item.get("ip"),
+                        "protocol": item.get("protocol"),
+                        "event_type": item.get("event_type"),
+                        "event_source": item.get("event_source"),
+                        "summary": item.get("summary"),
+                        "dataset_rows": item.get("leak", {}).get("dataset", {}).get("rows"),
+                        "dataset_files": item.get("leak", {}).get("dataset", {}).get("files"),
+                    },
+                )
+            )
+        return hits
+
+    @staticmethod
+    def _build_query(query: str, scope: str) -> str:
+        normalized = str(query or "").strip()
+        if "." in normalized and " " not in normalized:
+            if scope == "leak":
+                return f'host:"{normalized}"'
+            return f'host:"{normalized}" "{normalized}"'
+        return f'"{normalized}"'
+
+    @staticmethod
+    def _item_to_text(item: dict[str, Any], query: str, scope: str) -> str:
+        http = item.get("http", {}) or {}
+        leak = item.get("leak", {}) or {}
+        dataset = leak.get("dataset", {}) or {}
+        credentials = (item.get("service", {}) or {}).get("credentials", {}) or {}
+        ssl = (item.get("ssl", {}) or {}).get("certificate", {}) or {}
+
+        parts = [
+            query,
+            scope,
+            str(item.get("host", "") or ""),
+            str(item.get("protocol", "") or ""),
+            str(http.get("title", "") or ""),
+            str(item.get("summary", "") or ""),
+            str(leak.get("type", "") or ""),
+            str(leak.get("severity", "") or ""),
+            str(dataset.get("rows", "") or ""),
+            str(dataset.get("files", "") or ""),
+            str(credentials.get("username", "") or ""),
+            str(credentials.get("password", "") or ""),
+            str(credentials.get("key", "") or ""),
+            " ".join(str(domain) for domain in (ssl.get("domain") or []) if domain),
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    @staticmethod
+    def _resolve_item_date(item: dict[str, Any]) -> str:
+        value = item.get("time")
+        if isinstance(value, str) and value:
+            return value[:10]
+        return datetime.now(timezone.utc).date().isoformat()
+
+
 class ExternalIntelligenceService:
     """Collects public intelligence and normalizes it into a dashboard-ready structure."""
 
@@ -506,6 +679,7 @@ class ExternalIntelligenceService:
             TelegramIntelClient(),
             GitHubIntelClient(),
             IntelXIntelClient(),
+            LeakIXIntelClient(),
             PastebinIntelClient(),
             DehashedIntelClient(),
         ]
@@ -675,7 +849,8 @@ class ExternalIntelligenceService:
             email_domain_match = any(email.lower().endswith(f"@{normalized_query}") for email in emails)
             github_code_match = hit.source == "GitHub" and search_type == "code" and exact_domain_match
             intelx_match = hit.source == "IntelX" and normalized_query in haystack
-            return github_code_match or intelx_match or exact_domain_match or email_domain_match or (
+            leakix_match = hit.source == "LeakIX" and normalized_query in haystack
+            return github_code_match or intelx_match or leakix_match or exact_domain_match or email_domain_match or (
                 normalized_query in haystack and has_threat_signal
             )
 

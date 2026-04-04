@@ -82,6 +82,7 @@ DEHASHED_API_KEY=<dehashed_api_key>
 GITHUB_TOKEN=<github_personal_access_token>
 INTELX_API_KEY=<intelx_api_key>
 INTELX_API_BASE=https://free.intelx.io
+LEAKIX_API_KEY=<leakix_api_key>
 ```
 
 ## Run The Backend
@@ -167,3 +168,4 @@ curl -X POST "http://127.0.0.1:8000/collect-intel" \
 - Pastebin collection only uses public data and may require access approvals for their scraping interface.
 - GitHub collection uses a personal access token for higher-rate public search access across code and issue results.
 - IntelX collection uses the assigned Search API instance and API key from your IntelX developer dashboard.
+- LeakIX collection uses the free API key in the `api-key` header and is rate-limited to about one request per second.

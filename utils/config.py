@@ -36,6 +36,7 @@ DEHASHED_API_KEY = os.getenv("DEHASHED_API_KEY", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 INTELX_API_KEY = os.getenv("INTELX_API_KEY", "")
 INTELX_API_BASE = os.getenv("INTELX_API_BASE", "https://free.intelx.io")
+LEAKIX_API_KEY = os.getenv("LEAKIX_API_KEY", "")
 
 PUBLIC_INTEL_MAX_ITEMS = int(os.getenv("PUBLIC_INTEL_MAX_ITEMS", "10") or 10)
 PUBLIC_INTEL_REQUEST_TIMEOUT = float(os.getenv("PUBLIC_INTEL_REQUEST_TIMEOUT", "12") or 12)
@@ -46,6 +47,7 @@ PLATFORM_REPUTATION_SCORES = {
     "Dehashed": 0.9,
     "GitHub": 0.61,
     "IntelX": 0.79,
+    "LeakIX": 0.76,
 }
 
 DATA_SENSITIVITY_SCORES = {
