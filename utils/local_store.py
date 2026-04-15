@@ -281,6 +281,24 @@ class LocalMonitoringStore:
             existing["why_flagged"] = _dedupe_strings(
                 [*existing.get("why_flagged", []), *normalized_candidate.get("why_flagged", [])]
             )
+            existing["verification_badge"] = normalized_candidate.get("verification_badge") or existing.get("verification_badge")
+            existing["verification_score"] = max(
+                int(existing.get("verification_score", 0) or 0),
+                int(normalized_candidate.get("verification_score", 0) or 0),
+            )
+            existing["verification_reasons"] = _dedupe_strings(
+                [*existing.get("verification_reasons", []), *normalized_candidate.get("verification_reasons", [])]
+            )
+            existing["sensitive_data_types"] = _dedupe_strings(
+                [*existing.get("sensitive_data_types", []), *normalized_candidate.get("sensitive_data_types", [])]
+            )
+            existing["sensitive_findings"] = self._merge_sensitive_findings(
+                existing.get("sensitive_findings", []), normalized_candidate.get("sensitive_findings", [])
+            )
+            existing["sensitive_risk_score"] = max(
+                int(existing.get("sensitive_risk_score", 0) or 0),
+                int(normalized_candidate.get("sensitive_risk_score", 0) or 0),
+            )
             existing["correlation_reason"] = _dedupe_strings(
                 [*existing.get("correlation_reason", []), *normalized_candidate.get("correlation_reason", [])]
             )
@@ -501,6 +519,8 @@ class LocalMonitoringStore:
         status_counter = Counter()
         category_counter = Counter()
         confidence_counter = Counter()
+        verification_counter = Counter()
+        sensitive_counter = Counter()
         source_counter = Counter()
         asset_counter = Counter()
         data_counter = Counter()
@@ -518,6 +538,7 @@ class LocalMonitoringStore:
             severity_counter[case.get("severity", "Low")] += 1
             status_counter[case.get("case_status", "new")] += 1
             category_counter[case.get("category", "Unknown")] += 1
+            verification_counter[case.get("verification_badge", "WEAK_SIGNAL")] += 1
             confidence_score = int(case.get("confidence_score", 0) or 0)
             if confidence_score >= 80:
                 confidence_counter["80-100"] += 1
@@ -545,6 +566,8 @@ class LocalMonitoringStore:
                 asset_counter[asset] += 1
             for data_type in case.get("exposed_data_types", []):
                 data_counter[data_type] += 1
+            for sensitive_type in case.get("sensitive_data_types", []):
+                sensitive_counter[sensitive_type] += 1
             business_units[case.get("business_unit", "Security Operations")] += 1
             organization_counter[case.get("org_id") or case.get("organization") or "unknown-org"] += 1
 
@@ -581,9 +604,11 @@ class LocalMonitoringStore:
             "status_distribution": dict(status_counter),
             "category_distribution": dict(category_counter),
             "confidence_distribution": dict(confidence_counter),
+            "verification_distribution": dict(verification_counter),
             "source_distribution": dict(source_counter),
             "asset_distribution": dict(asset_counter.most_common(10)),
             "exposure_distribution": dict(data_counter.most_common(10)),
+            "sensitive_data_distribution": dict(sensitive_counter.most_common(10)),
             "business_unit_distribution": dict(business_units),
             "organization_distribution": dict(organization_counter.most_common(25)),
             "organizations": [name for name, _ in organization_counter.most_common(25)],
@@ -675,6 +700,34 @@ class LocalMonitoringStore:
             merged.append(item)
         merged.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
         return merged[:60]
+
+    @staticmethod
+    def _merge_sensitive_findings(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged = list(existing)
+        seen = {
+            (
+                str(item.get("finding_type") or "").strip().lower(),
+                str(item.get("masked_value") or "").strip().lower(),
+                str(item.get("source_evidence_id") or "").strip().lower(),
+                str(item.get("source_index") if item.get("source_index") is not None else "").strip().lower(),
+            )
+            for item in existing
+            if isinstance(item, dict)
+        }
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("finding_type") or "").strip().lower(),
+                str(item.get("masked_value") or "").strip().lower(),
+                str(item.get("source_evidence_id") or "").strip().lower(),
+                str(item.get("source_index") if item.get("source_index") is not None else "").strip().lower(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(item))
+        return merged[:20]
 
     @staticmethod
     def _max_optional_int(left: Any, right: Any) -> int | None:

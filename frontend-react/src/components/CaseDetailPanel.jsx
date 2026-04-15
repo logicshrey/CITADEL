@@ -27,6 +27,16 @@ function toPercent(value) {
   return value <= 1 ? Math.round(value * 100) : Math.round(value)
 }
 
+function verificationBadgeClasses(value) {
+  if (value === 'VERIFIED') {
+    return 'border-[#00FF9F]/35 bg-[#00FF9F]/10 text-[#B8FFE0]'
+  }
+  if (value === 'LIKELY') {
+    return 'border-[#FFC857]/35 bg-[#FFC857]/10 text-[#FFE4A3]'
+  }
+  return 'border-white/10 bg-white/5 text-slate-300'
+}
+
 function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
   const [caseStatus, setCaseStatus] = useState('new')
   const [owner, setOwner] = useState('Unassigned')
@@ -87,6 +97,10 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
       : `${selectedCase.corroborating_source_count || 0} additional corroborating source(s) support this case.`
   const confidencePercent = toPercent(selectedCase.confidence_score || 0)
   const attentionReasons = selectedCase.why_flagged || selectedCase.why_this_was_flagged || selectedCase.confidence_assessment?.reasons || []
+  const verificationBadge = selectedCase.verification_badge || 'WEAK_SIGNAL'
+  const verificationReasons = selectedCase.verification_reasons || []
+  const sensitiveTypes = selectedCase.sensitive_data_types || []
+  const sensitiveFindings = selectedCase.sensitive_findings || []
 
   return (
     <div className="glass-card neon-panel rounded-[32px] p-6">
@@ -108,6 +122,9 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
             Confidence {confidencePercent}%
           </div>
+          <div className={`terminal-text rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.24em] ${verificationBadgeClasses(verificationBadge)}`}>
+            {verificationBadge.replaceAll('_', ' ')}
+          </div>
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
             {selectedCase.triage_status || selectedCase.case_status}
           </div>
@@ -123,7 +140,7 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
         </div>
       </div>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Confirmed organization assets</p>
           <p className="mt-2 text-sm text-slate-200">{formatList(flattenAssets(selectedCase.affected_assets), 'Unknown assets')}</p>
@@ -131,6 +148,10 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Confirmed exposed data</p>
           <p className="mt-2 text-sm text-slate-200">{formatList(selectedCase.exposed_data_types, 'Undetermined')}</p>
+        </div>
+        <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Sensitive data detected</p>
+          <p className="mt-2 text-sm text-slate-200">{formatList(sensitiveTypes, 'No sensitive indicators detected')}</p>
         </div>
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Estimated exposure size</p>
@@ -150,6 +171,15 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
               {attentionReasons.map((line) => (
                 <li key={line}>• {line}</li>
               ))}
+            </ul>
+          </div>
+          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Why this case was verified</p>
+            <p className="mt-3 text-sm text-slate-300">
+              Badge {verificationBadge.replaceAll('_', ' ')} | Verification score {selectedCase.verification_score || 0}
+            </p>
+            <ul className="mt-3 space-y-2 text-sm text-slate-200">
+              {verificationReasons.length ? verificationReasons.map((line) => <li key={line}>• {line}</li>) : <li>• No verification rationale captured.</li>}
             </ul>
           </div>
           {selectedCase.severity_reason ? (
@@ -184,6 +214,22 @@ function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
                 <li key={line}>• {line}</li>
               ))}
             </ul>
+          </div>
+          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Sensitive findings</p>
+            <p className="mt-3 text-sm text-slate-300">Sensitive risk boost {selectedCase.sensitive_risk_score || 0}</p>
+            <div className="mt-3 space-y-3">
+              {sensitiveFindings.length ? (
+                sensitiveFindings.map((finding, index) => (
+                  <div key={`${finding.finding_type}-${finding.masked_value}-${index}`} className="rounded-[18px] border border-white/8 bg-white/5 p-3">
+                    <p className="text-sm font-semibold text-white">{finding.finding_type}</p>
+                    <p className="mt-2 text-sm text-slate-200">{finding.masked_value}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-400">No masked sensitive-data samples were captured.</p>
+              )}
+            </div>
           </div>
         </div>
 

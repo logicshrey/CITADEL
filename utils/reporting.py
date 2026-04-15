@@ -177,6 +177,8 @@ def _summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
     severity_counter = Counter()
     confidence_counter = Counter()
     category_counter = Counter()
+    verification_counter = Counter()
+    sensitive_counter = Counter()
     source_counter = Counter()
     domain_counter = Counter()
     email_counter = Counter()
@@ -185,6 +187,7 @@ def _summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
     for case in cases:
         severity_counter[case.get("severity", "Low")] += 1
         category_counter[case.get("category", "Unknown")] += 1
+        verification_counter[case.get("verification_badge", "WEAK_SIGNAL")] += 1
         orgs[case.get("org_id") or case.get("organization") or "unknown-org"] += 1
         confidence = int(case.get("confidence_score", 0) or 0)
         if confidence >= 80:
@@ -203,15 +206,20 @@ def _summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
             domain_counter[domain] += 1
         for email in affected_assets.get("emails", []):
             email_counter[email] += 1
+        for sensitive_type in case.get("sensitive_data_types", []):
+            sensitive_counter[sensitive_type] += 1
 
     return {
         "total_cases": len(cases),
         "severity_distribution": dict(severity_counter),
         "confidence_distribution": dict(confidence_counter),
         "category_distribution": dict(category_counter),
+        "verification_distribution": dict(verification_counter),
+        "sensitive_distribution": dict(sensitive_counter),
         "top_category": category_counter.most_common(1)[0][0] if category_counter else "None",
         "top_domains": [value for value, _ in domain_counter.most_common(5)],
         "top_emails": [value for value, _ in email_counter.most_common(5)],
+        "top_sensitive_types": [value for value, _ in sensitive_counter.most_common(6)],
         "top_sources": [value for value, _ in source_counter.most_common(5)],
         "orgs": [value for value, _ in orgs.most_common(3)],
         "org_count": len(orgs),
@@ -236,12 +244,17 @@ def _build_executive_summary(styles: Any, summary: dict[str, Any], cases: list[d
     high = summary["severity_distribution"].get("High", 0)
     medium = summary["severity_distribution"].get("Medium", 0)
     low = summary["severity_distribution"].get("Low", 0)
+    verified = summary["verification_distribution"].get("VERIFIED", 0)
+    likely = summary["verification_distribution"].get("LIKELY", 0)
+    weak = summary["verification_distribution"].get("WEAK_SIGNAL", 0)
     narrative = (
         f"CITADEL identified {summary['total_cases']} consolidated exposure case(s) in the selected reporting window. "
         f"The current mix includes {critical} critical, {high} high, {medium} medium, and {low} low severity cases. "
         f"The most common exposure category is {summary['top_category']}. "
+        f"Verification currently breaks down into {verified} verified, {likely} likely, and {weak} weak-signal case(s). "
         f"Most frequently impacted domains include {', '.join(summary['top_domains'][:3]) or 'none identified'}, "
-        f"while the most common source platforms are {', '.join(summary['top_sources'][:3]) or 'none identified'}."
+        f"while the most common source platforms are {', '.join(summary['top_sources'][:3]) or 'none identified'}. "
+        f"Sensitive data indicators most often include {', '.join(summary['top_sensitive_types'][:4]) or 'none identified'}."
     )
     elements.append(Paragraph(narrative, styles["CitadelBody"]))
     elements.append(Spacer(1, 0.2 * inch))
@@ -251,6 +264,8 @@ def _build_executive_summary(styles: Any, summary: dict[str, Any], cases: list[d
                 ["Metric", "Value"],
                 ["Total cases", str(summary["total_cases"])],
                 ["Top exposure category", summary["top_category"]],
+                ["Verification breakdown", f"Verified {verified} | Likely {likely} | Weak {weak}"],
+                ["Sensitive data summary", ", ".join(summary["top_sensitive_types"][:6]) or "None"],
                 ["Top impacted domains", ", ".join(summary["top_domains"][:5]) or "None"],
                 ["Top impacted emails", ", ".join(summary["top_emails"][:5]) or "None"],
                 ["Top sources", ", ".join(summary["top_sources"][:5]) or "None"],
@@ -291,6 +306,24 @@ def _build_overview_tables(styles: Any, summary: dict[str, Any]) -> list[Any]:
         _styled_table(
             [["Category", "Count"], *[[label, str(value)] for label, value in summary["category_distribution"].items()]]
             or [["Category", "Count"], ["None", "0"]],
+            styles=styles,
+            col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
+        )
+    )
+    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(
+        _styled_table(
+            [["Verification badge", "Count"], *[[label, str(value)] for label, value in summary["verification_distribution"].items()]]
+            or [["Verification badge", "Count"], ["None", "0"]],
+            styles=styles,
+            col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
+        )
+    )
+    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(
+        _styled_table(
+            [["Sensitive type", "Count"], *[[label, str(value)] for label, value in summary["sensitive_distribution"].items()]]
+            or [["Sensitive type", "Count"], ["None", "0"]],
             styles=styles,
             col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
         )
@@ -337,7 +370,7 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
                     ["Emails", ", ".join(case.get("affected_assets", {}).get("emails", [])) or "None"],
                     ["IPs", ", ".join(case.get("affected_assets", {}).get("ips", [])) or "None"],
                     ["Usernames", ", ".join(case.get("affected_assets", {}).get("usernames", [])) or "None"],
-                    ["Tokens", ", ".join(case.get("affected_assets", {}).get("tokens", [])) or "None"],
+                    ["Tokens", ", ".join(_mask_list(case.get("affected_assets", {}).get("tokens", []))) or "None"],
                     ["Wallets", ", ".join(case.get("affected_assets", {}).get("wallets", [])) or "None"],
                 ],
                 styles=styles,
@@ -353,9 +386,37 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
                     ["Field", "Value"],
                     ["Verified Org Match", "YES" if case.get("verified_org_match") else "NO"],
                     ["Verification status", case.get("verification_status") or ("YES" if case.get("verified_org_match") else "NO")],
+                    ["Badge", case.get("verification_badge", "WEAK_SIGNAL")],
+                    ["Verification score", str(case.get("verification_score", 0))],
                     ["Relevance score", str(case.get("relevance_score", 0))],
-                    ["Reason", " | ".join(verification_reasons[:4]) or "No verification rationale was captured."],
+                    [
+                        "Reason",
+                        " | ".join((case.get("verification_reasons", []) or verification_reasons)[:5])
+                        or "No verification rationale was captured.",
+                    ],
                 ],
+                styles=styles,
+                col_widths=_table_col_widths(7.0 * inch, [0.24, 0.76]),
+            )
+        )
+        elements.append(Spacer(1, 0.15 * inch))
+        elements.append(Paragraph("Sensitive Data Detected", styles["CitadelHeading"]))
+        sensitive_rows = [["Field", "Value"]]
+        sensitive_rows.append(["Types", ", ".join(case.get("sensitive_data_types", [])) or "None"])
+        sensitive_rows.append(["Risk boost", str(case.get("sensitive_risk_score", 0) or 0)])
+        masked_findings = case.get("sensitive_findings", [])[:6]
+        sensitive_rows.append(
+            [
+                "Masked findings",
+                " | ".join(
+                    f"{item.get('finding_type', 'Sensitive')}: {item.get('masked_value', 'masked')}" for item in masked_findings
+                )
+                or "No masked sensitive findings were captured.",
+            ]
+        )
+        elements.append(
+            _styled_table(
+                sensitive_rows,
                 styles=styles,
                 col_widths=_table_col_widths(7.0 * inch, [0.24, 0.76]),
             )
@@ -603,12 +664,27 @@ def _appendix_entities(case: dict[str, Any]) -> list[str]:
         *assets.get("domains", []),
         *assets.get("emails", []),
         *assets.get("ips", []),
-        *assets.get("tokens", []),
         *assets.get("wallets", []),
+        *[finding.get("masked_value", "") for finding in case.get("sensitive_findings", []) if isinstance(finding, dict)],
     ]
     if appendix_values:
         return appendix_values
     return flatten_affected_assets(case.get("affected_assets"))
+
+
+def _mask_list(values: list[str]) -> list[str]:
+    return [_mask_text(value) for value in values if str(value or "").strip()]
+
+
+def _mask_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "*" * len(text)
+    if text.isdigit():
+        return f"{text[:2]}{'*' * max(0, len(text) - 6)}{text[-4:]}"
+    return f"{text[:4]}{'*' * max(4, len(text) - 8)}{text[-4:]}"
 
 
 def _draw_header_footer(canvas: Any, doc: Any) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from intelligence.sensitive_detector.models import SensitiveFinding
 from intelligence.validators import validate_string_list
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -174,6 +175,16 @@ class ConfidenceAssessment(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class SensitiveFindingRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    finding_type: str
+    masked_value: str
+    source_evidence_id: str | None = None
+    source_index: int | None = None
+    risk_weight: int = 0
+
+
 class EvidenceItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -240,6 +251,9 @@ class ExposureCase(BaseModel):
     relevance_reasons: list[str] = Field(default_factory=list)
     verified_org_match: bool = False
     verification_status: str = "NO"
+    verification_badge: str = "WEAK_SIGNAL"
+    verification_score: int = 0
+    verification_reasons: list[str] = Field(default_factory=list)
     suppressed_noise: bool = False
     suppression_reasons: list[str] = Field(default_factory=list)
     confidence_assessment: ConfidenceAssessment = Field(default_factory=ConfidenceAssessment)
@@ -250,6 +264,9 @@ class ExposureCase(BaseModel):
     watchlists: list[str] = Field(default_factory=list)
     matched_indicators: list[str] = Field(default_factory=list)
     exposed_data_types: list[str] = Field(default_factory=list)
+    sensitive_data_types: list[str] = Field(default_factory=list)
+    sensitive_findings: list[SensitiveFindingRecord] = Field(default_factory=list)
+    sensitive_risk_score: int = 0
     estimated_total_records: int | None = None
     estimated_total_records_label: str = "Amount not disclosed by the source"
     event_signature: str = ""
@@ -389,6 +406,37 @@ def normalize_source_records(payload: dict[str, Any]) -> list[SourceRecord]:
     return results
 
 
+def _normalize_sensitive_findings(values: Any) -> list[SensitiveFindingRecord]:
+    if not isinstance(values, list):
+        return []
+
+    findings: list[SensitiveFindingRecord] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        try:
+            finding = SensitiveFinding.model_validate(value)
+        except Exception:
+            continue
+        findings.append(SensitiveFindingRecord.model_validate(finding.model_dump()))
+    return findings
+
+
+def _legacy_verification_badge(data: dict[str, Any], confidence_score: int, evidence_count: int) -> str:
+    existing = str(data.get("verification_badge") or "").strip().upper()
+    if existing in {"VERIFIED", "LIKELY", "WEAK_SIGNAL"}:
+        return existing
+    if bool(data.get("suppressed_noise", False)) or evidence_count == 0:
+        return "WEAK_SIGNAL"
+    relevance_score = max(0, min(100, _coerce_int(data.get("relevance_score"), 0)))
+    verified_org_match = bool(data.get("verified_org_match", False))
+    if verified_org_match and relevance_score >= 80 and confidence_score >= 85:
+        return "VERIFIED"
+    if verified_org_match and relevance_score >= 60 and confidence_score >= 65:
+        return "LIKELY"
+    return "WEAK_SIGNAL"
+
+
 def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
     data = dict(payload or {})
     case_id = str(data.get("case_id") or data.get("id") or "")
@@ -426,6 +474,8 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
     assigned_to = str(data.get("assigned_to") or data.get("owner") or "Unassigned").strip() or "Unassigned"
     title = str(data.get("title") or f"{data.get('organization') or data.get('org_id') or 'Organization'} exposure case").strip()
     category = _normalize_category(data.get("category") or data.get("threat_type"))
+    sensitive_findings = _normalize_sensitive_findings(data.get("sensitive_findings", []))
+    verification_badge = _legacy_verification_badge(data, confidence_score, len(evidence))
     if category == "Unknown" and str(data.get("threat_type") or "").strip():
         category = _normalize_category(data.get("threat_type"))
 
@@ -471,6 +521,9 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
         relevance_reasons=_coerce_str_list(data.get("relevance_reasons", [])),
         verified_org_match=bool(data.get("verified_org_match", False)),
         verification_status=str(data.get("verification_status") or ("YES" if data.get("verified_org_match") else "NO")),
+        verification_badge=verification_badge,
+        verification_score=max(0, min(100, _coerce_int(data.get("verification_score"), 0))),
+        verification_reasons=_coerce_str_list(data.get("verification_reasons", [])),
         suppressed_noise=bool(data.get("suppressed_noise", False)),
         suppression_reasons=_coerce_str_list(data.get("suppression_reasons", [])),
         confidence_assessment=ConfidenceAssessment(
@@ -484,6 +537,9 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
         watchlists=_coerce_str_list(data.get("watchlists", [])),
         matched_indicators=_coerce_str_list(data.get("matched_indicators", [])),
         exposed_data_types=_coerce_str_list(data.get("exposed_data_types", [])),
+        sensitive_data_types=_coerce_str_list(data.get("sensitive_data_types", [])),
+        sensitive_findings=sensitive_findings,
+        sensitive_risk_score=max(0, min(30, _coerce_int(data.get("sensitive_risk_score"), 0))),
         estimated_total_records=data.get("estimated_total_records")
         if isinstance(data.get("estimated_total_records"), int)
         else None,

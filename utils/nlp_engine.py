@@ -12,7 +12,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 
 from intelligence.correlation import assess_correlation
 from intelligence.relevance_engine import assess_organization_relevance, flatten_relevant_assets, resolve_organization_profile
+from intelligence.sensitive_detector import detect_sensitive_data
 from intelligence.scoring import score_case
+from intelligence.verification_engine import compute_verification_status
 from intelligence.validators import filter_pattern_matches, validate_entities
 from utils.config import LABELS, THREAT_TEMPLATES
 from utils.db import MongoManager
@@ -860,7 +862,6 @@ class ThreatIntelligenceEngine:
         external = result.get("external_intelligence", {})
         correlation_assessment = correlation_assessment or result.get("correlation_assessment", {})
         relevance_assessment = result.get("relevance_assessment", {})
-        case_score = score_case(result, correlation_assessment)
         source_name = str(external.get("source") or result.get("source") or "Unknown")
         organization = str(external.get("organization") or query)
         matched_indicators = list(external.get("matched_indicators", []))
@@ -882,12 +883,6 @@ class ThreatIntelligenceEngine:
         ]
         source_locations = list(external.get("source_locations", []))
         technical_summary = external.get("summary") or result.get("impact_assessment", {}).get("summary") or "Exposure detected."
-        exposure_summary = self._build_executive_case_summary(
-            result=result,
-            external=external,
-            case_score=case_score.to_dict(),
-            affected_assets=affected_assets,
-        )
         leak_channel, leak_post_url = choose_primary_location(source_locations)
         event_signature = str(
             external.get("event_signature")
@@ -908,6 +903,60 @@ class ThreatIntelligenceEngine:
         first_seen = event_timestamp
 
         evidence_id = f"{source_name.lower()}::{event_timestamp}::{event_signature}"
+        evidence_payload = {
+            "evidence_id": evidence_id,
+            "evidence_type": "link" if leak_post_url else "text",
+            "timestamp": event_timestamp,
+            "source": source_name,
+            "source_platform": source_name,
+            "summary": technical_summary,
+            "source_locations": source_locations,
+            "matched_indicators": matched_indicators,
+            "matched_entities": matched_indicators,
+            "data_breakdown": list(external.get("data_breakdown", [])),
+            "cleaned_snippet": technical_summary,
+            "raw_snippet": str(result.get("input_text", "") or "")[:800],
+            "raw_excerpt": str(result.get("input_text", "") or "")[:800],
+            "provenance": {
+                "query": query,
+                "demo_mode": bool(external.get("demo_mode", False)),
+                "raw_items": list(external.get("raw_items", []))[:5],
+            },
+        }
+        sensitive_data_types: list[str] = []
+        sensitive_findings: list[dict[str, Any]] = []
+        sensitive_reasons: list[str] = []
+        sensitive_risk_score = 0
+        sensitive_detection = detect_sensitive_data(
+            " ".join(
+                [
+                    str(evidence_payload.get("cleaned_snippet") or ""),
+                    str(evidence_payload.get("raw_snippet") or ""),
+                    str(evidence_payload.get("raw_excerpt") or ""),
+                ]
+            ).strip()
+        )
+        sensitive_data_types = list(sensitive_detection.sensitive_types)
+        sensitive_risk_score = int(sensitive_detection.risk_score_addition or 0)
+        sensitive_reasons = list(sensitive_detection.detection_reasons)
+        for finding in sensitive_detection.matched_samples:
+            finding_payload = finding.model_dump()
+            finding_payload["source_evidence_id"] = evidence_id
+            finding_payload["source_index"] = 0
+            sensitive_findings.append(finding_payload)
+        case_score = score_case(
+            result,
+            correlation_assessment,
+            sensitive_data_types=sensitive_data_types,
+            sensitive_risk_score=sensitive_risk_score,
+        )
+        exposure_summary = self._build_executive_case_summary(
+            result=result,
+            external=external,
+            case_score=case_score.to_dict(),
+            affected_assets=affected_assets,
+        )
+        confidence_basis.extend(sensitive_reasons[:3])
         source_entry = {
             "source": source_name,
             "first_seen": first_seen,
@@ -961,6 +1010,9 @@ class ThreatIntelligenceEngine:
             "relevance_reasons": list(relevance_assessment.get("relevance_reasons", [])),
             "verified_org_match": bool(relevance_assessment.get("verified_org_match", False)),
             "verification_status": str(relevance_assessment.get("verification_status") or "NO"),
+            "verification_badge": "WEAK_SIGNAL",
+            "verification_score": 0,
+            "verification_reasons": [],
             "suppressed_noise": bool(relevance_assessment.get("suppressed_noise", False)),
             "suppression_reasons": list(relevance_assessment.get("suppression_reasons", [])),
             "threat_type": result.get("threat_type"),
@@ -968,6 +1020,9 @@ class ThreatIntelligenceEngine:
             "affected_assets": affected_assets,
             "matched_indicators": matched_indicators,
             "exposed_data_types": exposed_data_types,
+            "sensitive_data_types": sensitive_data_types,
+            "sensitive_findings": sensitive_findings,
+            "sensitive_risk_score": sensitive_risk_score,
             "estimated_total_records": external.get("estimated_record_count"),
             "estimated_total_records_label": external.get("estimated_records") or "Amount not disclosed by the source",
             "recommended_actions": recommended_actions,
@@ -980,28 +1035,7 @@ class ThreatIntelligenceEngine:
                 "post_url": leak_post_url,
             },
             "sources": [source_entry],
-            "evidence": [
-                {
-                    "evidence_id": evidence_id,
-                    "evidence_type": "link" if leak_post_url else "text",
-                    "timestamp": event_timestamp,
-                    "source": source_name,
-                    "source_platform": source_name,
-                    "summary": technical_summary,
-                    "source_locations": source_locations,
-                    "matched_indicators": matched_indicators,
-                    "matched_entities": matched_indicators,
-                    "data_breakdown": list(external.get("data_breakdown", [])),
-                    "cleaned_snippet": technical_summary,
-                    "raw_snippet": str(result.get("input_text", "") or "")[:800],
-                    "raw_excerpt": str(result.get("input_text", "") or "")[:800],
-                    "provenance": {
-                        "query": query,
-                        "demo_mode": bool(external.get("demo_mode", False)),
-                        "raw_items": list(external.get("raw_items", []))[:5],
-                    },
-                }
-            ],
+            "evidence": [evidence_payload],
             "timeline": [
                 {
                     "timestamp": event_timestamp,
@@ -1012,6 +1046,10 @@ class ThreatIntelligenceEngine:
             "first_seen": first_seen,
             "last_seen": event_timestamp,
         }
+        verification_result = compute_verification_status(case_payload)
+        case_payload["verification_badge"] = verification_result.verification_badge
+        case_payload["verification_score"] = verification_result.verification_score
+        case_payload["verification_reasons"] = verification_result.verification_reasons
         return case_payload
 
     @staticmethod

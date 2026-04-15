@@ -34,6 +34,16 @@ function flattenAssets(assets) {
   return Object.values(assets).flat().filter(Boolean)
 }
 
+function verificationBadgeClasses(value) {
+  if (value === 'VERIFIED') {
+    return 'border-[#00FF9F]/35 bg-[#00FF9F]/10 text-[#B8FFE0]'
+  }
+  if (value === 'LIKELY') {
+    return 'border-[#FFC857]/35 bg-[#FFC857]/10 text-[#FFE4A3]'
+  }
+  return 'border-white/10 bg-white/5 text-slate-300'
+}
+
 function Feed() {
   const [stats, setStats] = useState(null)
   const [cases, setCases] = useState([])
@@ -400,11 +410,30 @@ function Feed() {
                         <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
                           Confidence {caseItem.confidence_score || 0}
                         </div>
+                        <div
+                          className={`terminal-text rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.24em] ${
+                            verificationBadgeClasses(caseItem.verification_badge || 'WEAK_SIGNAL')
+                          }`}
+                        >
+                          {(caseItem.verification_badge || 'WEAK_SIGNAL').replaceAll('_', ' ')}
+                        </div>
                         <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
                           {caseItem.triage_status || caseItem.case_status}
                         </div>
                       </div>
                     </div>
+                    {caseItem.sensitive_data_types?.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {caseItem.sensitive_data_types.slice(0, 4).map((item) => (
+                          <div
+                            key={`${caseItem.id}-${item}`}
+                            className="terminal-text rounded-full border border-[#FF3B3B]/20 bg-[#FF3B3B]/10 px-3 py-1 text-[11px] uppercase tracking-[0.22em] text-[#FFD0D0]"
+                          >
+                            {item}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="mt-4 grid gap-3 md:grid-cols-3">
                       <div>
                         <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Assets</p>

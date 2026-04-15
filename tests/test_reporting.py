@@ -168,6 +168,24 @@ class ReportingTests(unittest.TestCase):
         self.assertTrue(all(width > 0 for width in summary_table._colWidths))
         self.assertIsInstance(summary_table._cellvalues[1][0], Paragraph)
 
+    def test_report_story_includes_verification_and_sensitive_sections(self) -> None:
+        case = make_case()
+        case["verification_badge"] = "VERIFIED"
+        case["verification_score"] = 93
+        case["verification_reasons"] = ["High-confidence credentials and verified organization assets support this case."]
+        case["sensitive_data_types"] = ["Credential Pair", "PAN"]
+        case["sensitive_findings"] = [
+            {"finding_type": "Credential Pair", "masked_value": "Sup3********ret!", "source_evidence_id": "e1", "source_index": 0},
+            {"finding_type": "PAN", "masked_value": "ABCD***34F", "source_evidence_id": "e1", "source_index": 0},
+        ]
+        case["sensitive_risk_score"] = 24
+
+        story = _build_report_story(cases=[case], start_date=None, end_date=None, org_id="acme.com")
+        paragraph_text = [block.getPlainText() for block in story if isinstance(block, Paragraph)]
+
+        self.assertIn("Sensitive Data Detected", paragraph_text)
+        self.assertIn("Verification Status", paragraph_text)
+
 
 if __name__ == "__main__":
     unittest.main()

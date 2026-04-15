@@ -32,10 +32,17 @@ class CaseScore:
         }
 
 
-def score_case(result: dict[str, Any], correlation_assessment: dict[str, Any]) -> CaseScore:
+def score_case(
+    result: dict[str, Any],
+    correlation_assessment: dict[str, Any],
+    *,
+    sensitive_data_types: list[str] | None = None,
+    sensitive_risk_score: int = 0,
+) -> CaseScore:
     external = result.get("external_intelligence", {})
     relevance_assessment = result.get("relevance_assessment", {})
     data_types = {str(item).lower() for item in external.get("data_types", [])}
+    sensitive_types = {str(item).strip().lower() for item in (sensitive_data_types or []) if str(item).strip()}
     matched_entities = list(correlation_assessment.get("matched_watchlist_entities", []))
     validated_entity_count = int(correlation_assessment.get("validated_entity_count", 0) or 0)
     correlation_score = int(correlation_assessment.get("correlation_score", 0) or 0)
@@ -49,6 +56,12 @@ def score_case(result: dict[str, Any], correlation_assessment: dict[str, Any]) -
         str(entity.get("entity_type") or "").upper() == "TOKEN" for entity in result.get("entities", [])
     )
     database_present = "database dump" == str(result.get("threat_type", "")).strip().lower() or "bulk personal records" in data_types
+    hash_present = any(hash_type in sensitive_types for hash_type in {"md5 hash", "sha1 hash", "sha256 hash", "bcrypt hash", "argon2 hash"})
+    api_key_present = any(
+        api_type in sensitive_types
+        for api_type in {"jwt token", "aws access key", "aws secret key", "google api key", "github token", "stripe key"}
+    )
+    regulated_data_present = any(data_type in sensitive_types for data_type in {"pan", "aadhaar", "credit card", "bank account", "ifsc"})
     org_email_present = any("@" in value for value in matched_entities)
 
     severity_score = 10
@@ -67,6 +80,18 @@ def score_case(result: dict[str, Any], correlation_assessment: dict[str, Any]) -
     if database_present:
         severity_score += 25
         severity_reasons.append("Database or bulk-record exposure indicators were validated.")
+    if api_key_present:
+        severity_score += 18
+        severity_reasons.append("Active API keys or tokens materially increase compromise risk.")
+    if hash_present:
+        severity_score += 12
+        severity_reasons.append("Credential hash material indicates likely account exposure.")
+    if regulated_data_present:
+        severity_score += 18
+        severity_reasons.append("Regulated or financial identifiers raise compliance and fraud risk.")
+    if sensitive_risk_score > 0:
+        severity_score += min(20, int(sensitive_risk_score))
+        severity_reasons.append("Sensitive-data detection increased case risk based on masked evidence matches.")
 
     if verified_asset_count >= 2:
         severity_score += 15
