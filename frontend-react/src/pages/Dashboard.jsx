@@ -17,6 +17,7 @@ import Loader from '../components/Loader'
 import StatCard from '../components/StatCard'
 import TerminalConsole from '../components/TerminalConsole'
 import Toast from '../components/Toast'
+import CyberCellReportModal from '../components/CyberCellReportModal'
 import { exportPdfReport, getMonitoringStats } from '../services/api'
 
 const pieColors = ['#00CFFF', '#FF3B3B', '#00FF9F', '#8B5CF6', '#FACC15']
@@ -27,6 +28,7 @@ function Dashboard() {
   const [toast, setToast] = useState('')
   const [exporting, setExporting] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
+  const [reportingOpen, setReportingOpen] = useState(false)
   const [exportFilters, setExportFilters] = useState({
     orgId: '',
     startDate: '',
@@ -145,9 +147,39 @@ function Dashboard() {
     }
   }
 
+  const handleOpenCyberCellReport = () => {
+    if (!exportFilters.orgId) {
+      setToast('Select an organization before preparing a cyber cell report.')
+      return
+    }
+    setReportingOpen(true)
+  }
+
+  const cyberCellDefaultRequest = {
+    org_id: exportFilters.orgId || undefined,
+    date_range:
+      exportFilters.startDate || exportFilters.endDate
+        ? {
+            start_date: exportFilters.startDate || undefined,
+            end_date: exportFilters.endDate || undefined,
+          }
+        : undefined,
+    severity: exportFilters.severity ? [exportFilters.severity] : [],
+    organization_details: {
+      organization_name: exportFilters.orgId || '',
+    },
+  }
+
   return (
     <div className="space-y-6">
       <Toast message={toast} />
+      <CyberCellReportModal
+        isOpen={reportingOpen}
+        onClose={() => setReportingOpen(false)}
+        defaultRequest={cyberCellDefaultRequest}
+        onSuccess={setToast}
+        onError={setToast}
+      />
       <Motion.section
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
@@ -208,7 +240,7 @@ function Dashboard() {
               </label>
             </div>
 
-            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
+            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto_auto]">
               <label className="block">
                 <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">Severity filter</span>
                 <select
@@ -248,6 +280,16 @@ function Dashboard() {
                   className="terminal-text w-full rounded-[18px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-slate-950 disabled:opacity-60 xl:min-w-[220px]"
                 >
                   {exporting ? `Exporting ${downloadProgress || 0}%` : 'Export PDF Report'}
+                </button>
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={handleOpenCyberCellReport}
+                  disabled={!exportFilters.orgId}
+                  className="terminal-text w-full rounded-[18px] border border-[#FF3B3B]/30 bg-[#FF3B3B]/10 px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-[#FFD0D0] disabled:opacity-60 xl:min-w-[220px]"
+                >
+                  Report To Cyber Cell
                 </button>
               </div>
             </div>

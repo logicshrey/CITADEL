@@ -48,6 +48,20 @@ LEAKIX_API_KEY = os.getenv("LEAKIX_API_KEY", "")
 PUBLIC_INTEL_MAX_ITEMS = int(os.getenv("PUBLIC_INTEL_MAX_ITEMS", "10") or 10)
 PUBLIC_INTEL_REQUEST_TIMEOUT = float(os.getenv("PUBLIC_INTEL_REQUEST_TIMEOUT", "12") or 12)
 DEBUG_REJECTED_NOISE = os.getenv("DEBUG_REJECTED_NOISE", "false").strip().lower() in {"1", "true", "yes", "on"}
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or 587)
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "")
+SMTP_REPLY_TO = os.getenv("SMTP_REPLY_TO", "")
+SMTP_DEFAULT_CC = os.getenv("SMTP_DEFAULT_CC", "")
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
+SMTP_USE_STARTTLS = os.getenv("SMTP_USE_STARTTLS", "true").strip().lower() in {"1", "true", "yes", "on"}
+SMTP_TIMEOUT_SECONDS = float(os.getenv("SMTP_TIMEOUT_SECONDS", "20") or 20)
+REPORTING_ENABLED = os.getenv("REPORTING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+REPORTING_MOCK_MODE = os.getenv("REPORTING_MOCK_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+CYBER_CELL_DAILY_SEND_LIMIT = int(os.getenv("CYBER_CELL_DAILY_SEND_LIMIT", "3") or 3)
+CYBER_CELL_PREVIEW_TTL_SECONDS = int(os.getenv("CYBER_CELL_PREVIEW_TTL_SECONDS", "1800") or 1800)
 
 PLATFORM_REPUTATION_SCORES = {
     "Telegram": 0.72,

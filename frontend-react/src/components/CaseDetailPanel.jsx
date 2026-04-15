@@ -27,7 +27,7 @@ function toPercent(value) {
   return value <= 1 ? Math.round(value * 100) : Math.round(value)
 }
 
-function CaseDetailPanel({ selectedCase, onSave }) {
+function CaseDetailPanel({ selectedCase, onSave, onReportToCyberCell }) {
   const [caseStatus, setCaseStatus] = useState('new')
   const [owner, setOwner] = useState('Unassigned')
   const [businessUnit, setBusinessUnit] = useState('Security Operations')
@@ -111,6 +111,15 @@ function CaseDetailPanel({ selectedCase, onSave }) {
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
             {selectedCase.triage_status || selectedCase.case_status}
           </div>
+          {onReportToCyberCell ? (
+            <button
+              type="button"
+              onClick={() => onReportToCyberCell(selectedCase)}
+              className="terminal-text rounded-full border border-[#FF3B3B]/30 bg-[#FF3B3B]/10 px-4 py-1 text-[11px] uppercase tracking-[0.24em] text-[#FFD0D0]"
+            >
+              Report To Cyber Cell
+            </button>
+          ) : null}
         </div>
       </div>
 

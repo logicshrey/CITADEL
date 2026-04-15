@@ -5,7 +5,7 @@ from queue import Empty
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -19,6 +19,14 @@ from utils.config import BACKEND_PORT, WATCHLIST_DEFAULT_INTERVAL_SECONDS
 from utils.monitoring_runtime import MonitoringEventBus, MonitoringScheduler
 from utils.nlp_engine import ThreatIntelligenceEngine
 from utils.reporting import generate_pdf_report
+from services.cyber_cell_reporting import (
+    CyberCellReportRequest,
+    CyberCellValidationError,
+    build_preview,
+    get_reporting_status,
+    send_report,
+)
+from services.cyber_cell_reporting.email_sender import CyberCellEmailError
 
 
 app = FastAPI(
@@ -331,6 +339,49 @@ def stream_events() -> StreamingResponse:
             event_bus.unsubscribe(subscriber)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/v1/report/cybercell/preview")
+def preview_cyber_cell_report(payload: CyberCellReportRequest, request: Request) -> dict[str, Any]:
+    try:
+        return build_preview(engine.db, payload, user_id=request.headers.get("X-User-Id"))
+    except CyberCellValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"message": exc.message, "reasons": exc.reasons}) from exc
+    except CyberCellEmailError as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc), "reasons": [str(exc)]}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cyber cell report preview failed: {exc}") from exc
+
+
+@app.get("/api/v1/report/cybercell/status")
+def cyber_cell_reporting_status() -> dict[str, Any]:
+    return get_reporting_status()
+
+
+@app.post("/api/v1/report/cybercell/send")
+def send_cyber_cell_report(payload: CyberCellReportRequest, request: Request) -> dict[str, Any]:
+    try:
+        response = send_report(engine.db, payload, user_id=request.headers.get("X-User-Id"))
+        event_bus.publish(
+            {
+                "event_type": "cyber_cell_report_sent",
+                "action": "sent",
+                "audit_id": response.get("audit_id"),
+                "timestamp": response.get("timestamp"),
+                "delivery_mode": response.get("delivery_mode"),
+                "sent_to": response.get("sent_to", []),
+            }
+        )
+        return response
+    except CyberCellValidationError as exc:
+        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": exc.message})
+        raise HTTPException(status_code=exc.status_code, detail={"message": exc.message, "reasons": exc.reasons}) from exc
+    except CyberCellEmailError as exc:
+        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": str(exc)})
+        raise HTTPException(status_code=400, detail={"message": str(exc), "reasons": [str(exc)]}) from exc
+    except Exception as exc:
+        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": str(exc)})
+        raise HTTPException(status_code=500, detail=f"Cyber cell report send failed: {exc}") from exc
 
 
 if __name__ == "__main__":

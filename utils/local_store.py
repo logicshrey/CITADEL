@@ -454,6 +454,32 @@ class LocalMonitoringStore:
         with self._lock:
             return list(self._state["audit_events"][-limit:][::-1])
 
+    def count_audit_events(
+        self,
+        *,
+        event_type: str | None = None,
+        org_id: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+    ) -> int:
+        with self._lock:
+            events = list(self._state["audit_events"])
+
+        total = 0
+        for event in events:
+            if event_type and str(event.get("event_type") or "").strip().lower() != event_type.strip().lower():
+                continue
+            if org_id and str(event.get("org_id") or "").strip().lower() != org_id.strip().lower():
+                continue
+            if status and str(event.get("status") or "").strip().lower() != status.strip().lower():
+                continue
+            if since is not None:
+                event_time = _parse_iso(event.get("send_timestamp")) or _parse_iso(event.get("timestamp"))
+                if event_time is None or event_time < since:
+                    continue
+            total += 1
+        return total
+
     def export_snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {

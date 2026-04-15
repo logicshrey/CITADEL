@@ -177,6 +177,21 @@ class MongoManager:
     def list_audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.local_store.list_audit_events(limit=limit)
 
+    def count_audit_events(
+        self,
+        *,
+        event_type: str | None = None,
+        org_id: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+    ) -> int:
+        return self.local_store.count_audit_events(
+            event_type=event_type,
+            org_id=org_id,
+            status=status,
+            since=since,
+        )
+
     def export_monitoring_snapshot(self) -> dict[str, Any]:
         return self.local_store.export_snapshot()
 

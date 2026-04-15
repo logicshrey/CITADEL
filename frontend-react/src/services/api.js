@@ -149,4 +149,19 @@ export const exportPdfReport = async ({
   }
 }
 
+export const previewCyberCellReport = async (payload) => {
+  const response = await api.post('/api/v1/report/cybercell/preview', payload, { timeout: 60000 })
+  return response.data
+}
+
+export const getCyberCellReportingStatus = async () => {
+  const response = await api.get('/api/v1/report/cybercell/status', { timeout: 10000 })
+  return response.data
+}
+
+export const sendCyberCellReport = async (payload) => {
+  const response = await api.post('/api/v1/report/cybercell/send', payload, { timeout: 60000 })
+  return response.data
+}
+
 export default api

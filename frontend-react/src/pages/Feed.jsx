@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion as Motion } from 'framer-motion'
 import CaseDetailPanel from '../components/CaseDetailPanel'
+import CyberCellReportModal from '../components/CyberCellReportModal'
 import Loader from '../components/Loader'
 import RiskBadge from '../components/RiskBadge'
 import StatCard from '../components/StatCard'
@@ -44,6 +45,8 @@ function Feed() {
   const [toast, setToast] = useState('')
   const [liveState, setLiveState] = useState('connecting')
   const [busyWatchlistId, setBusyWatchlistId] = useState('')
+  const [reportingOpen, setReportingOpen] = useState(false)
+  const [reportRequest, setReportRequest] = useState(null)
   const [filters, setFilters] = useState({
     status: '',
     priority: '',
@@ -141,6 +144,11 @@ function Feed() {
           await loadMonitoring()
         } else if (payload.event_type === 'watchlist_error') {
           setToast(payload.message || 'Watchlist run failed.')
+        } else if (payload.event_type === 'cyber_cell_report_sent') {
+          setToast(`Cyber cell report sent ${payload.delivery_mode === 'live' ? 'with live email delivery' : 'in mock mode'}.`)
+          await loadMonitoring()
+        } else if (payload.event_type === 'cyber_cell_report_failed') {
+          setToast(payload.message || 'Cyber cell report send failed.')
         }
       } catch {
         setLiveState('degraded')
@@ -232,6 +240,23 @@ function Feed() {
     }
   }
 
+  const handleOpenCyberCellReport = (caseItem) => {
+    const currentCase = caseItem || selectedCase
+    if (!currentCase?.id) {
+      setToast('Select a case before preparing a cyber cell report.')
+      return
+    }
+    setReportRequest({
+      case_ids: [currentCase.id],
+      org_id: currentCase.org_id || currentCase.organization || undefined,
+      severity: currentCase.severity ? [currentCase.severity] : [],
+      organization_details: {
+        organization_name: currentCase.organization || currentCase.org_id || '',
+      },
+    })
+    setReportingOpen(true)
+  }
+
   const latestTimestamp = useMemo(() => {
     return selectedCase?.last_seen ? new Date(selectedCase.last_seen).toLocaleString() : 'No recent case'
   }, [selectedCase])
@@ -239,6 +264,13 @@ function Feed() {
   return (
     <div className="space-y-6">
       <Toast message={toast} />
+      <CyberCellReportModal
+        isOpen={reportingOpen}
+        onClose={() => setReportingOpen(false)}
+        defaultRequest={reportRequest}
+        onSuccess={setToast}
+        onError={setToast}
+      />
       <Motion.section initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="glass-card neon-panel rounded-[32px] p-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
@@ -268,6 +300,14 @@ function Feed() {
               className="terminal-text rounded-full border border-[#00E5FF]/25 bg-[#00E5FF]/10 px-4 py-2 text-[11px] uppercase tracking-[0.24em] text-[#A8F3FF]"
             >
               Export Snapshot
+            </button>
+            <button
+              type="button"
+              onClick={() => handleOpenCyberCellReport(selectedCase)}
+              disabled={!selectedCase?.id}
+              className="terminal-text rounded-full border border-[#FF3B3B]/30 bg-[#FF3B3B]/10 px-4 py-2 text-[11px] uppercase tracking-[0.24em] text-[#FFD0D0] disabled:opacity-60"
+            >
+              Report To Cyber Cell
             </button>
           </div>
         </div>
@@ -389,7 +429,7 @@ function Feed() {
             )}
           </Motion.section>
 
-          <CaseDetailPanel selectedCase={selectedCase} onSave={handleSaveCase} />
+          <CaseDetailPanel selectedCase={selectedCase} onSave={handleSaveCase} onReportToCyberCell={handleOpenCyberCellReport} />
 
           <Motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card neon-panel rounded-[32px] p-6">
             <div>
