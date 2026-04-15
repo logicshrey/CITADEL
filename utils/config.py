@@ -19,6 +19,7 @@ PRIMARY_MODEL_PATH = MODELS_DIR / "tfidf_logreg.joblib"
 SECONDARY_MODEL_DIR = MODELS_DIR / "distilbert_threat"
 METRICS_PATH = MODELS_DIR / "training_metrics.json"
 MONITORING_STATE_PATH = DATA_DIR / "monitoring_state.json"
+ORG_PROFILES_PATH = DATA_DIR / "organization_profiles.json"
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "dark_web_threat_intel")
@@ -46,6 +47,7 @@ LEAKIX_API_KEY = os.getenv("LEAKIX_API_KEY", "")
 
 PUBLIC_INTEL_MAX_ITEMS = int(os.getenv("PUBLIC_INTEL_MAX_ITEMS", "10") or 10)
 PUBLIC_INTEL_REQUEST_TIMEOUT = float(os.getenv("PUBLIC_INTEL_REQUEST_TIMEOUT", "12") or 12)
+DEBUG_REJECTED_NOISE = os.getenv("DEBUG_REJECTED_NOISE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 PLATFORM_REPUTATION_SCORES = {
     "Telegram": 0.72,

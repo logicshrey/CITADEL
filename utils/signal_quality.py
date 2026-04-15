@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from intelligence.noise_filter import assess_noise, build_canonical_event_signature, canonicalize_event_text, similarity_score
 from utils.config import PLATFORM_REPUTATION_SCORES
 
 
@@ -133,7 +134,7 @@ class ConfidenceResult:
 
 
 def normalize_signal_text(text: str) -> str:
-    lowered = str(text or "").lower()
+    lowered = canonicalize_event_text(text)
     lowered = URL_PATTERN.sub(" ", lowered)
     lowered = re.sub(r"[^a-z0-9@._:\-/\s]+", " ", lowered)
     lowered = re.sub(r"\s+", " ", lowered).strip()
@@ -152,11 +153,7 @@ def tokenize_signal_text(text: str) -> list[str]:
 
 
 def token_similarity(left: str, right: str) -> float:
-    left_tokens = set(tokenize_signal_text(left))
-    right_tokens = set(tokenize_signal_text(right))
-    if not left_tokens or not right_tokens:
-        return 0.0
-    return round(len(left_tokens.intersection(right_tokens)) / len(left_tokens.union(right_tokens)), 4)
+    return similarity_score(left, right)
 
 
 def source_trust_score(source: str) -> float:
@@ -166,8 +163,9 @@ def source_trust_score(source: str) -> float:
 
 def is_likely_noise(text: str, source: str = "", metadata: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
     metadata_blob = " ".join(str(value) for value in (metadata or {}).values())
-    normalized = normalize_signal_text(f"{text} {metadata_blob}")
-    reasons: list[str] = []
+    noise = assess_noise(text, source=source, matched_assets=list((metadata or {}).get("matched_assets", [])))
+    normalized = normalize_signal_text(f"{noise.canonical_text} {metadata_blob}")
+    reasons: list[str] = list(noise.reasons)
     if any(keyword in normalized for keyword in NOISE_KEYWORDS):
         reasons.append("Contains common educational or incidental-reference keywords.")
     if "github" in normalized and any(keyword in normalized for keyword in {"readme", "notes", "tutorial", "allowlist"}):
@@ -176,7 +174,7 @@ def is_likely_noise(text: str, source: str = "", metadata: dict[str, Any] | None
         signal in normalized for signal in HIGH_SIGNAL_TERMS
     ):
         reasons.append("GitHub reference lacks strong exposure context.")
-    return (bool(reasons), reasons)
+    return (noise.likely_noise or bool(reasons), reasons)
 
 
 def query_match_strength(query: str, text: str, matched_indicators: list[str] | None = None) -> tuple[bool, list[str]]:
@@ -300,19 +298,15 @@ def build_event_signature(
     source_locations: list[str] | None = None,
     channel_hint: str = "",
 ) -> str:
-    matched_indicators = matched_indicators or []
-    source_locations = source_locations or []
-    normalized_text = normalize_signal_text(text)
-    dominant_tokens = Counter(tokenize_signal_text(f"{title} {normalized_text}")).most_common(12)
-    signature_basis = [
-        str(query or "").strip().lower(),
-        str(source or "").strip().lower(),
-        str(channel_hint or "").strip().lower(),
-        "|".join(sorted(item.lower() for item in matched_indicators[:8])),
-        "|".join(sorted(item.lower() for item in source_locations[:4])),
-        "|".join(token for token, _ in dominant_tokens),
-    ]
-    return hashlib.sha256("::".join(signature_basis).encode("utf-8")).hexdigest()[:24]
+    return build_canonical_event_signature(
+        query=query,
+        source=source,
+        title=title,
+        text=text,
+        matched_indicators=matched_indicators,
+        source_locations=source_locations,
+        channel_hint=channel_hint,
+    )
 
 
 def choose_primary_location(source_locations: list[str]) -> tuple[str | None, str | None]:

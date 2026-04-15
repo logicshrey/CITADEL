@@ -199,6 +199,7 @@ class LocalMonitoringStore:
                 case.setdefault("suggested_remediation_steps", case.get("recommended_actions", []))
                 case.setdefault("affected_assets_flat", flatten_affected_assets(case.get("affected_assets")))
                 case.setdefault("confidence_basis", [])
+                case.setdefault("occurrence_count", 1)
                 case["source_count"] = len(case.get("sources", []))
                 case["evidence_count"] = len(case.get("evidence", []))
                 case["corroborating_source_count"] = max(0, case["source_count"] - 1)
@@ -219,6 +220,10 @@ class LocalMonitoringStore:
                 else existing.get("priority")
             )
             existing["severity"] = normalized_candidate.get("severity", existing.get("severity"))
+            existing["severity_score"] = max(
+                int(existing.get("severity_score", 0) or 0),
+                int(normalized_candidate.get("severity_score", 0) or 0),
+            )
             existing["risk_level"] = normalized_candidate.get("risk_level", existing.get("risk_level"))
             existing["risk_score"] = max(float(existing.get("risk_score", 0) or 0), float(normalized_candidate.get("risk_score", 0) or 0))
             existing["confidence_score"] = max(
@@ -273,6 +278,18 @@ class LocalMonitoringStore:
             existing["why_this_was_flagged"] = _dedupe_strings(
                 [*existing.get("why_this_was_flagged", []), *normalized_candidate.get("why_this_was_flagged", [])]
             )
+            existing["why_flagged"] = _dedupe_strings(
+                [*existing.get("why_flagged", []), *normalized_candidate.get("why_flagged", [])]
+            )
+            existing["correlation_reason"] = _dedupe_strings(
+                [*existing.get("correlation_reason", []), *normalized_candidate.get("correlation_reason", [])]
+            )
+            existing["confidence_reasoning"] = _dedupe_strings(
+                [*existing.get("confidence_reasoning", []), *normalized_candidate.get("confidence_reasoning", [])]
+            )
+            existing["severity_reasoning"] = _dedupe_strings(
+                [*existing.get("severity_reasoning", []), *normalized_candidate.get("severity_reasoning", [])]
+            )
             existing["evidence"] = self._merge_evidence(existing.get("evidence", []), normalized_candidate.get("evidence", []))
             existing["sources"] = self._merge_sources(existing.get("sources", []), normalized_candidate.get("sources", []))
             existing["timeline"] = self._merge_timeline(existing.get("timeline", []), normalized_candidate.get("timeline", []))
@@ -284,6 +301,9 @@ class LocalMonitoringStore:
             )
             existing["event_signature"] = normalized_candidate.get("event_signature") or existing.get("event_signature") or existing.get("fingerprint_key")
             existing["fingerprint_key"] = normalized_candidate.get("fingerprint_key") or existing.get("fingerprint_key")
+            existing["occurrence_count"] = int(existing.get("occurrence_count", 1) or 1) + int(
+                normalized_candidate.get("occurrence_count", 1) or 1
+            )
             existing["leak_origin"] = normalized_candidate.get("leak_origin", existing.get("leak_origin"))
             existing["category"] = normalized_candidate.get("category", existing.get("category"))
             existing["triage_status"] = existing.get("triage_status") or normalized_candidate.get("triage_status")
@@ -459,6 +479,7 @@ class LocalMonitoringStore:
         asset_counter = Counter()
         data_counter = Counter()
         business_units = Counter()
+        organization_counter = Counter()
         open_review_durations: list[float] = []
         timeline_counter: Counter[str] = Counter()
         critical_cases = 0
@@ -499,6 +520,7 @@ class LocalMonitoringStore:
             for data_type in case.get("exposed_data_types", []):
                 data_counter[data_type] += 1
             business_units[case.get("business_unit", "Security Operations")] += 1
+            organization_counter[case.get("org_id") or case.get("organization") or "unknown-org"] += 1
 
         timeline = []
         for days_back in range(6, -1, -1):
@@ -537,6 +559,8 @@ class LocalMonitoringStore:
             "asset_distribution": dict(asset_counter.most_common(10)),
             "exposure_distribution": dict(data_counter.most_common(10)),
             "business_unit_distribution": dict(business_units),
+            "organization_distribution": dict(organization_counter.most_common(25)),
+            "organizations": [name for name, _ in organization_counter.most_common(25)],
             "timeline": timeline,
             "watchlist_health": watchlist_health,
             "mean_time_to_review_hours": round(sum(open_review_durations) / len(open_review_durations), 2)

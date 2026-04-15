@@ -4,6 +4,8 @@ import re
 from collections import Counter
 from typing import Any
 
+from intelligence.validators import validate_entities
+
 
 DOMAIN_PATTERN = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b")
 GENERIC_CORRELATION_SIGNALS = {
@@ -135,8 +137,13 @@ def decode_slang(text: str) -> dict[str, Any]:
 def extract_enriched_entities(text: str, regex_matches: dict[str, list[str]]) -> list[dict[str, str]]:
     entities = []
     domains = list(dict.fromkeys(DOMAIN_PATTERN.findall(text)))
+    email_domains = {
+        email.rsplit("@", 1)[-1].lower()
+        for email in regex_matches.get("emails", [])
+        if "@" in email
+    }
     for domain in domains:
-        if not any(domain in email for email in regex_matches.get("emails", [])):
+        if domain.lower() not in email_domains:
             entities.append({"text": domain, "label": "DOMAIN"})
 
     for email in regex_matches.get("emails", []):
@@ -146,7 +153,7 @@ def extract_enriched_entities(text: str, regex_matches: dict[str, list[str]]) ->
     for wallet in regex_matches.get("bitcoin_wallets", []):
         entities.append({"text": wallet, "label": "WALLET"})
 
-    return entities
+    return validate_entities(entities)
 
 
 def estimate_impact(

@@ -8,6 +8,44 @@ from utils.local_store import LocalMonitoringStore
 
 
 class LocalStoreTests(unittest.TestCase):
+    def test_case_stats_include_organization_distribution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = LocalMonitoringStore(Path(temp_dir) / "monitoring_state.json")
+            first_case = {
+                "organization": "acme.com",
+                "org_id": "acme.com",
+                "query": "acme.com",
+                "category": "Credential Leak",
+                "threat_type": "Credential Leak",
+                "priority": "HIGH",
+                "priority_score": 80,
+                "risk_level": "HIGH",
+                "confidence_score": 0.85,
+                "summary": "Acme credential leak.",
+                "affected_assets": ["acme.com", "admin@acme.com"],
+                "matched_indicators": ["acme.com", "admin@acme.com"],
+                "first_seen": "2026-04-15T00:00:00+00:00",
+                "last_seen": "2026-04-15T00:00:00+00:00",
+            }
+            second_case = {
+                **first_case,
+                "organization": "globex.com",
+                "org_id": "globex.com",
+                "query": "globex.com",
+                "matched_indicators": ["globex.com", "admin@globex.com"],
+                "affected_assets": ["globex.com", "admin@globex.com"],
+                "summary": "Globex credential leak.",
+            }
+
+            store.save_case(first_case)
+            store.save_case(second_case)
+
+            stats = store.get_case_stats()
+            self.assertEqual(stats["organization_distribution"]["acme.com"], 1)
+            self.assertEqual(stats["organization_distribution"]["globex.com"], 1)
+            self.assertIn("acme.com", stats["organizations"])
+            self.assertIn("globex.com", stats["organizations"])
+
     def test_similar_cases_merge_into_single_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = LocalMonitoringStore(Path(temp_dir) / "monitoring_state.json")
@@ -80,6 +118,7 @@ class LocalStoreTests(unittest.TestCase):
             self.assertEqual(first_case["id"], second_case["id"])
             self.assertEqual(len(store.list_cases(limit=10)), 1)
             self.assertEqual(second_case["evidence_count"], 2)
+            self.assertEqual(second_case["occurrence_count"], 2)
 
 
 if __name__ == "__main__":

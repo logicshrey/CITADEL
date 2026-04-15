@@ -11,10 +11,12 @@ from typing import Any
 
 import requests
 
+from intelligence.validators import validate_string_list
 from utils.config import (
     DATA_SENSITIVITY_SCORES,
     DEHASHED_API_KEY,
     DEHASHED_EMAIL,
+    DEBUG_REJECTED_NOISE,
     GITHUB_TOKEN,
     INTELX_API_BASE,
     INTELX_API_KEY,
@@ -727,21 +729,21 @@ class ExternalIntelligenceService:
                     continue
 
                 finding = self._aggregate_hits(normalized_query, client_name, hits)
-                if not should_promote_finding(
-                    score_confidence(
-                        query=normalized_query,
-                        text=finding.text,
-                        source=finding.source,
-                        matched_indicators=finding.matched_indicators,
-                        data_types=finding.data_types,
-                        source_locations=finding.source_locations,
-                        evidence_count=finding.volume,
-                        metadata=finding.raw_items[0].get("metadata", {}) if finding.raw_items else {},
-                    )
-                ):
-                    warnings.append(
-                        f"{client_name} returned only low-confidence or likely-noise content for query {normalized_query}."
-                    )
+                confidence = score_confidence(
+                    query=normalized_query,
+                    text=finding.text,
+                    source=finding.source,
+                    matched_indicators=finding.matched_indicators,
+                    data_types=finding.data_types,
+                    source_locations=finding.source_locations,
+                    evidence_count=finding.volume,
+                    metadata=finding.raw_items[0].get("metadata", {}) if finding.raw_items else {},
+                )
+                if not should_promote_finding(confidence):
+                    warning = f"{client_name} returned only low-confidence or likely-noise content for query {normalized_query}."
+                    if DEBUG_REJECTED_NOISE and confidence.reasons:
+                        warning = f"{warning} Reasons: {' | '.join(confidence.reasons[:4])}"
+                    warnings.append(warning)
                     continue
                 findings.append(finding)
 
@@ -986,8 +988,8 @@ class ExternalIntelligenceService:
         normalized_query = str(query or "").strip().lower()
         haystack_parts = [hit.text, *[str(value) for value in hit.metadata.values() if value is not None]]
         haystack = " ".join(haystack_parts).lower()
-        emails = EMAIL_PATTERN.findall(haystack)
-        domains = DOMAIN_PATTERN.findall(haystack)
+        emails = validate_string_list("EMAIL", EMAIL_PATTERN.findall(haystack))
+        domains = validate_string_list("DOMAIN", DOMAIN_PATTERN.findall(haystack))
         usernames = HANDLE_PATTERN.findall(haystack)
         has_threat_signal = bool(THREAT_SIGNAL_PATTERN.search(haystack))
         has_sensitive_signal = bool(emails or usernames or PASSWORD_SIGNAL_PATTERN.search(haystack))
@@ -1022,7 +1024,7 @@ class ExternalIntelligenceService:
             results.extend(EMAIL_PATTERN.findall(hit.text))
             for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
                 results.extend(EMAIL_PATTERN.findall(value))
-        return results
+        return validate_string_list("EMAIL", results)
 
     @staticmethod
     def _extract_usernames(hits: list[RawSourceHit]) -> list[str]:
@@ -1045,7 +1047,11 @@ class ExternalIntelligenceService:
             results.extend(DOMAIN_PATTERN.findall(hit.text))
             for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
                 results.extend(DOMAIN_PATTERN.findall(value))
-        return [domain for domain in results if ExternalIntelligenceService._is_valid_domain_candidate(domain)]
+        return [
+            domain
+            for domain in validate_string_list("DOMAIN", results)
+            if ExternalIntelligenceService._is_valid_domain_candidate(domain)
+        ]
 
     @staticmethod
     def _extract_ip_addresses(hits: list[RawSourceHit]) -> list[str]:
@@ -1054,7 +1060,7 @@ class ExternalIntelligenceService:
             results.extend(IP_ADDRESS_PATTERN.findall(hit.text))
             for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
                 results.extend(IP_ADDRESS_PATTERN.findall(value))
-        return results
+        return validate_string_list("IP", results)
 
     @staticmethod
     def _classify_breach_type(text: str, hits: list[RawSourceHit]) -> str:

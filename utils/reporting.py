@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -17,6 +18,18 @@ from utils.case_schema import flatten_affected_assets, normalize_case_list
 
 
 REPORT_TITLE = "CITADEL Exposure Intelligence Report"
+REPORT_NOISE_PATTERNS = (
+    "apache server status",
+    "apache status",
+    "directory listing",
+    "found 28 files trough .ds_store spidering",
+    "server uptime",
+    "self-serve purchase",
+    "usage analytics",
+    "economic index",
+    "real interactions with the ai assistant",
+)
+REPORT_NOISE_ASSETS = {"db.php", "index.php", "readme.md", "robots.txt", "sitemap.xml"}
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -48,6 +61,8 @@ def filter_cases(
 
     filtered: list[dict[str, Any]] = []
     for case in normalized_cases:
+        if case.get("suppressed_noise"):
+            continue
         if org_filter and str(case.get("org_id") or "").strip().lower() != org_filter:
             continue
         if severity_filter and str(case.get("severity") or "").strip().lower() not in severity_filter:
@@ -58,6 +73,8 @@ def filter_cases(
         if start_bound and case_time and case_time < start_bound:
             continue
         if end_bound and case_time and case_time > end_bound:
+            continue
+        if not _is_report_worthy_case(case):
             continue
         filtered.append(case)
 
@@ -91,8 +108,21 @@ def generate_pdf_report(
 
 
 def _build_pdf(file_path: Path, cases: list[dict[str, Any]], *, start_date: str | None, end_date: str | None, org_id: str | None) -> None:
+    elements = _build_report_story(cases=cases, start_date=start_date, end_date=end_date, org_id=org_id)
     doc = SimpleDocTemplate(
         str(file_path),
+        pagesize=A4,
+        rightMargin=0.65 * inch,
+        leftMargin=0.65 * inch,
+        topMargin=0.85 * inch,
+        bottomMargin=0.7 * inch,
+    )
+    doc.build(elements, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)
+
+
+def _build_report_story(*, cases: list[dict[str, Any]], start_date: str | None, end_date: str | None, org_id: str | None) -> list[Any]:
+    doc = SimpleDocTemplate(
+        "citadel-preview.pdf",
         pagesize=A4,
         rightMargin=0.65 * inch,
         leftMargin=0.65 * inch,
@@ -104,11 +134,13 @@ def _build_pdf(file_path: Path, cases: list[dict[str, Any]], *, start_date: str 
     styles.add(ParagraphStyle(name="CitadelHeading", fontSize=16, leading=20, textColor=colors.HexColor("#0F172A"), spaceAfter=10))
     styles.add(ParagraphStyle(name="CitadelBody", fontSize=10, leading=14, textColor=colors.HexColor("#334155")))
     styles.add(ParagraphStyle(name="CitadelSmall", fontSize=8, leading=11, textColor=colors.HexColor("#64748B")))
+    styles.add(ParagraphStyle(name="CitadelTableCell", fontSize=8.6, leading=11, textColor=colors.HexColor("#334155")))
+    styles.add(ParagraphStyle(name="CitadelTableHeader", fontSize=8.8, leading=11, textColor=colors.white))
 
     elements: list[Any] = []
     summary = _summarize_cases(cases)
     generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    report_org = org_id or summary["orgs"][0] if summary["orgs"] else "All monitored organizations"
+    report_org = _resolve_report_org_label(org_id=org_id, summary=summary)
     date_range = f"{start_date or 'Beginning'} to {end_date or 'Now'}"
 
     elements.extend(
@@ -130,11 +162,15 @@ def _build_pdf(file_path: Path, cases: list[dict[str, Any]], *, start_date: str 
     elements.append(PageBreak())
     elements.extend(_build_overview_tables(styles, summary))
     elements.append(PageBreak())
+    elements.extend(_build_case_summary_table(styles, cases))
+    elements.append(PageBreak())
     elements.extend(_build_detailed_cases(styles, cases))
+    elements.append(PageBreak())
+    elements.extend(_build_recommended_actions_section(styles, cases))
     elements.append(PageBreak())
     elements.extend(_build_appendix(styles, cases))
 
-    doc.build(elements, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)
+    return elements
 
 
 def _summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
@@ -178,7 +214,20 @@ def _summarize_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
         "top_emails": [value for value, _ in email_counter.most_common(5)],
         "top_sources": [value for value, _ in source_counter.most_common(5)],
         "orgs": [value for value, _ in orgs.most_common(3)],
+        "org_count": len(orgs),
     }
+
+
+def _resolve_report_org_label(*, org_id: str | None, summary: dict[str, Any]) -> str:
+    if org_id:
+        return str(org_id)
+    orgs = list(summary.get("orgs", []))
+    org_count = int(summary.get("org_count", 0) or 0)
+    if not orgs:
+        return "All monitored organizations"
+    if org_count <= 1:
+        return orgs[0]
+    return f"Multiple organizations ({org_count})"
 
 
 def _build_executive_summary(styles: Any, summary: dict[str, Any], cases: list[dict[str, Any]]) -> list[Any]:
@@ -205,7 +254,9 @@ def _build_executive_summary(styles: Any, summary: dict[str, Any], cases: list[d
                 ["Top impacted domains", ", ".join(summary["top_domains"][:5]) or "None"],
                 ["Top impacted emails", ", ".join(summary["top_emails"][:5]) or "None"],
                 ["Top sources", ", ".join(summary["top_sources"][:5]) or "None"],
-            ]
+            ],
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.28, 0.72]),
         )
     )
     if not cases:
@@ -221,21 +272,27 @@ def _build_overview_tables(styles: Any, summary: dict[str, Any]) -> list[Any]:
     elements.append(
         _styled_table(
             [["Severity", "Count"], *[[label, str(value)] for label, value in summary["severity_distribution"].items()]]
-            or [["Severity", "Count"], ["None", "0"]]
+            or [["Severity", "Count"], ["None", "0"]],
+            styles=styles,
+            col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
         )
     )
     elements.append(Spacer(1, 0.15 * inch))
     elements.append(
         _styled_table(
             [["Confidence band", "Count"], *[[label, str(value)] for label, value in summary["confidence_distribution"].items()]]
-            or [["Confidence band", "Count"], ["None", "0"]]
+            or [["Confidence band", "Count"], ["None", "0"]],
+            styles=styles,
+            col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
         )
     )
     elements.append(Spacer(1, 0.15 * inch))
     elements.append(
         _styled_table(
             [["Category", "Count"], *[[label, str(value)] for label, value in summary["category_distribution"].items()]]
-            or [["Category", "Count"], ["None", "0"]]
+            or [["Category", "Count"], ["None", "0"]],
+            styles=styles,
+            col_widths=_table_col_widths(4.2 * inch, [0.68, 0.32]),
         )
     )
     return elements
@@ -254,6 +311,7 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
         elements.append(
             Paragraph(
                 f"<b>Severity:</b> {case.get('severity', 'Low')} | "
+                f"<b>Severity score:</b> {case.get('severity_score', case.get('priority_score', 0))} | "
                 f"<b>Confidence:</b> {case.get('confidence_score', 0)} | "
                 f"<b>Category:</b> {case.get('category', 'Unknown')}",
                 styles["CitadelBody"],
@@ -263,6 +321,14 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
         elements.append(Paragraph(case.get("exposure_summary") or case.get("executive_summary") or case.get("summary", ""), styles["CitadelBody"]))
         elements.append(Spacer(1, 0.15 * inch))
         elements.append(Paragraph("Impacted Assets", styles["CitadelHeading"]))
+        if not flatten_affected_assets(case.get("affected_assets")):
+            elements.append(
+                Paragraph(
+                    "No verified organization-owned assets were identified. This case is a weak signal requiring manual verification.",
+                    styles["CitadelBody"],
+                )
+            )
+            elements.append(Spacer(1, 0.1 * inch))
         elements.append(
             _styled_table(
                 [
@@ -273,7 +339,25 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
                     ["Usernames", ", ".join(case.get("affected_assets", {}).get("usernames", [])) or "None"],
                     ["Tokens", ", ".join(case.get("affected_assets", {}).get("tokens", [])) or "None"],
                     ["Wallets", ", ".join(case.get("affected_assets", {}).get("wallets", [])) or "None"],
-                ]
+                ],
+                styles=styles,
+                col_widths=_table_col_widths(7.0 * inch, [0.22, 0.78]),
+            )
+        )
+        elements.append(Spacer(1, 0.15 * inch))
+        elements.append(Paragraph("Verification Status", styles["CitadelHeading"]))
+        verification_reasons = case.get("relevance_reasons", []) or case.get("suppression_reasons", [])
+        elements.append(
+            _styled_table(
+                [
+                    ["Field", "Value"],
+                    ["Verified Org Match", "YES" if case.get("verified_org_match") else "NO"],
+                    ["Verification status", case.get("verification_status") or ("YES" if case.get("verified_org_match") else "NO")],
+                    ["Relevance score", str(case.get("relevance_score", 0))],
+                    ["Reason", " | ".join(verification_reasons[:4]) or "No verification rationale was captured."],
+                ],
+                styles=styles,
+                col_widths=_table_col_widths(7.0 * inch, [0.24, 0.76]),
             )
         )
         elements.append(Spacer(1, 0.15 * inch))
@@ -289,7 +373,13 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
             )
         if len(evidence_rows) == 1:
             evidence_rows.append(["None", "No evidence captured", "N/A"])
-        elements.append(_styled_table(evidence_rows))
+        elements.append(
+            _styled_table(
+                evidence_rows,
+                styles=styles,
+                col_widths=_table_col_widths(7.0 * inch, [0.18, 0.54, 0.28]),
+            )
+        )
         elements.append(Spacer(1, 0.15 * inch))
         elements.append(Paragraph("Leak Source Information", styles["CitadelHeading"]))
         elements.append(
@@ -300,9 +390,17 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
                     ["Channel/User", case.get("leak_origin", {}).get("channel_or_user") or "Unknown"],
                     ["Post URL", case.get("leak_origin", {}).get("post_url") or "Unknown"],
                     ["Source list", ", ".join(source.get("source", "Unknown") for source in case.get("sources", [])) or "None"],
-                ]
+                ],
+                styles=styles,
+                col_widths=_table_col_widths(7.0 * inch, [0.24, 0.76]),
             )
         )
+        elements.append(Spacer(1, 0.15 * inch))
+        elements.append(Paragraph("Correlation Reason", styles["CitadelHeading"]))
+        for reason in case.get("correlation_reason", [])[:6]:
+            elements.append(Paragraph(f"- {reason}", styles["CitadelBody"]))
+        if not case.get("correlation_reason"):
+            elements.append(Paragraph("- Correlation details were not captured for this case.", styles["CitadelBody"]))
         elements.append(Spacer(1, 0.15 * inch))
         elements.append(Paragraph("Timeline", styles["CitadelHeading"]))
         for event in case.get("timeline", [])[:6]:
@@ -318,8 +416,68 @@ def _build_detailed_cases(styles: Any, cases: list[dict[str, Any]]) -> list[Any]
             elements.append(Paragraph(f"- {action}", styles["CitadelBody"]))
         elements.append(Spacer(1, 0.15 * inch))
         elements.append(Paragraph("Why This Was Flagged", styles["CitadelHeading"]))
-        for reason in case.get("why_this_was_flagged", [])[:8]:
+        reasons = case.get("why_flagged") or case.get("why_this_was_flagged", [])
+        for reason in reasons[:8]:
             elements.append(Paragraph(f"- {reason}", styles["CitadelBody"]))
+    return elements
+
+
+def _build_case_summary_table(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
+    elements = [Paragraph("Case Summary Table", styles["CitadelHeading"])]
+    rows = [["Case", "Severity", "Confidence", "Category", "Assets"]]
+    for case in cases[:20]:
+        asset_preview = ", ".join((case.get("affected_assets_flat") or flatten_affected_assets(case.get("affected_assets")))[:3]) or "None"
+        rows.append(
+            [
+                case.get("title", "Exposure case")[:60],
+                str(case.get("severity", "Low")),
+                str(case.get("confidence_score", 0)),
+                str(case.get("category", "Unknown")),
+                asset_preview[:70],
+            ]
+        )
+    if len(rows) == 1:
+        rows.append(["None", "N/A", "0", "None", "None"])
+    elements.append(
+        _styled_table(
+            rows,
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.42, 0.11, 0.11, 0.16, 0.20]),
+        )
+    )
+    elements.append(Spacer(1, 0.15 * inch))
+    elements.append(Paragraph("This table highlights the most relevant filtered cases included in the report window.", styles["CitadelBody"]))
+    return elements
+
+
+def _build_recommended_actions_section(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
+    elements = [Paragraph("Recommended Actions", styles["CitadelHeading"])]
+    aggregated_actions = Counter()
+    for case in cases:
+        for action in case.get("recommended_actions", []):
+            aggregated_actions[action] += 1
+
+    if not aggregated_actions:
+        elements.append(Paragraph("No recommended actions are available for the selected cases.", styles["CitadelBody"]))
+        return elements
+
+    elements.append(
+        Paragraph(
+            "Prioritize the following remediation themes across the selected cases. Counts indicate how often the action appeared across filtered cases.",
+            styles["CitadelBody"],
+        )
+    )
+    elements.append(Spacer(1, 0.15 * inch))
+    rows = [["Recommended action", "Cases"]]
+    for action, count in aggregated_actions.most_common(12):
+        rows.append([action, str(count)])
+    elements.append(
+        _styled_table(
+            rows,
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.82, 0.18]),
+        )
+    )
     return elements
 
 
@@ -329,7 +487,8 @@ def _build_appendix(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
     raw_entities = Counter()
     source_rows = [["Case", "Source", "Locations"]]
     for case in cases:
-        for entity in case.get("matched_indicators", []) or flatten_affected_assets(case.get("affected_assets")):
+        appendix_entities = _appendix_entities(case)
+        for entity in appendix_entities:
             raw_entities[entity] += 1
         for source in case.get("sources", []):
             source_rows.append(
@@ -347,14 +506,32 @@ def _build_appendix(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
     if len(source_rows) == 1:
         source_rows.append(["None", "None", "None"])
     elements.append(Spacer(1, 0.15 * inch))
-    elements.append(_styled_table(entity_rows))
+    elements.append(
+        _styled_table(
+            entity_rows,
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.8, 0.2]),
+        )
+    )
     elements.append(Spacer(1, 0.15 * inch))
-    elements.append(_styled_table(source_rows))
+    elements.append(
+        _styled_table(
+            source_rows,
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.42, 0.16, 0.42]),
+        )
+    )
     return elements
 
 
-def _styled_table(rows: list[list[str]]) -> Table:
-    table = Table(rows, repeatRows=1, hAlign="LEFT")
+def _styled_table(rows: list[list[str]], *, styles: Any, col_widths: list[float]) -> Table:
+    table = Table(
+        _wrap_table_rows(rows, styles),
+        colWidths=col_widths,
+        repeatRows=1,
+        hAlign="LEFT",
+        splitByRow=True,
+    )
     table.setStyle(
         TableStyle(
             [
@@ -372,6 +549,66 @@ def _styled_table(rows: list[list[str]]) -> Table:
         )
     )
     return table
+
+
+def _wrap_table_rows(rows: list[list[Any]], styles: Any) -> list[list[Paragraph]]:
+    wrapped_rows: list[list[Paragraph]] = []
+    for row_index, row in enumerate(rows):
+        style = styles["CitadelTableHeader"] if row_index == 0 else styles["CitadelTableCell"]
+        wrapped_rows.append([_paragraph_cell(cell, style) for cell in row])
+    return wrapped_rows
+
+
+def _paragraph_cell(value: Any, style: Any) -> Paragraph:
+    text = str(value or "").strip() or "None"
+    safe_text = escape(text).replace("\n", "<br/>")
+    return Paragraph(safe_text, style)
+
+
+def _table_col_widths(total_width: float, weights: list[float]) -> list[float]:
+    divisor = sum(weights) or 1
+    return [total_width * (weight / divisor) for weight in weights]
+
+
+def _is_report_worthy_case(case: dict[str, Any]) -> bool:
+    if case.get("suppressed_noise"):
+        return False
+    summary_blob = " ".join(
+        str(case.get(field) or "")
+        for field in ("title", "summary", "technical_summary", "exposure_summary", "executive_summary")
+    ).lower()
+    if any(pattern in summary_blob for pattern in REPORT_NOISE_PATTERNS):
+        return False
+
+    assets = case.get("affected_assets", {}) or {}
+    valid_assets = [
+        *assets.get("domains", []),
+        *assets.get("emails", []),
+        *assets.get("ips", []),
+        *assets.get("tokens", []),
+        *assets.get("wallets", []),
+    ]
+    if not valid_assets and not assets.get("usernames", []):
+        return False
+
+    normalized_assets = {str(asset or "").strip().lower() for asset in flatten_affected_assets(assets)}
+    if normalized_assets and normalized_assets.issubset(REPORT_NOISE_ASSETS):
+        return False
+    return True
+
+
+def _appendix_entities(case: dict[str, Any]) -> list[str]:
+    assets = case.get("affected_assets", {}) or {}
+    appendix_values = [
+        *assets.get("domains", []),
+        *assets.get("emails", []),
+        *assets.get("ips", []),
+        *assets.get("tokens", []),
+        *assets.get("wallets", []),
+    ]
+    if appendix_values:
+        return appendix_values
+    return flatten_affected_assets(case.get("affected_assets"))
 
 
 def _draw_header_footer(canvas: Any, doc: Any) -> None:

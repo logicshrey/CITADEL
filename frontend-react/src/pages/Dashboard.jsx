@@ -28,6 +28,7 @@ function Dashboard() {
   const [exporting, setExporting] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [exportFilters, setExportFilters] = useState({
+    orgId: '',
     startDate: '',
     endDate: '',
     severity: '',
@@ -83,6 +84,13 @@ function Dashboard() {
     () => Object.entries(stats?.confidence_distribution || {}).map(([name, value]) => ({ name, value })),
     [stats],
   )
+  const organizationOptions = useMemo(
+    () =>
+      Object.entries(stats?.organization_distribution || {})
+        .sort((left, right) => right[1] - left[1])
+        .map(([name, value]) => ({ name, value })),
+    [stats],
+  )
   const activeCases = stats?.active_cases ?? 0
   const criticalCases = stats?.critical_cases ?? 0
   const corroboratedCases = stats?.corroborated_cases ?? 0
@@ -100,11 +108,17 @@ function Dashboard() {
   ]
 
   const handleExportPdf = async () => {
+    if (!exportFilters.orgId) {
+      setToast('Select an organization before exporting a PDF report.')
+      return
+    }
+
     setExporting(true)
     setDownloadProgress(0)
 
     try {
       const response = await exportPdfReport({
+        orgId: exportFilters.orgId,
         startDate: exportFilters.startDate || undefined,
         endDate: exportFilters.endDate || undefined,
         severity: exportFilters.severity ? [exportFilters.severity] : [],
@@ -151,53 +165,96 @@ function Dashboard() {
             <p className="text-xs uppercase tracking-[0.35em] text-[#00E5FF]">Executive Report Export</p>
             <h2 className="mt-2 text-3xl font-semibold text-white">Generate a PDF briefing</h2>
             <p className="mt-3 max-w-3xl text-sm text-slate-300">
-              Export a professional CITADEL exposure intelligence report for leadership using the current date, severity, and category filters.
+              Export a professional CITADEL exposure intelligence report for one selected organization. Date,
+              severity, and category filters are optional refinements.
             </p>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <input
-              type="datetime-local"
-              value={exportFilters.startDate}
-              onChange={(event) => setExportFilters((current) => ({ ...current, startDate: event.target.value }))}
-              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
-            />
-            <input
-              type="datetime-local"
-              value={exportFilters.endDate}
-              onChange={(event) => setExportFilters((current) => ({ ...current, endDate: event.target.value }))}
-              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
-            />
-            <select
-              value={exportFilters.severity}
-              onChange={(event) => setExportFilters((current) => ({ ...current, severity: event.target.value }))}
-              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
-            >
-              <option value="">All severities</option>
-              <option value="Critical">Critical</option>
-              <option value="High">High</option>
-              <option value="Medium">Medium</option>
-              <option value="Low">Low</option>
-            </select>
-            <select
-              value={exportFilters.category}
-              onChange={(event) => setExportFilters((current) => ({ ...current, category: event.target.value }))}
-              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
-            >
-              <option value="">All categories</option>
-              {Object.keys(stats?.category_distribution || {}).map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              disabled={exporting}
-              className="terminal-text rounded-[18px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-slate-950 disabled:opacity-60"
-            >
-              {exporting ? `Exporting ${downloadProgress || 0}%` : 'Export PDF Report'}
-            </button>
+          <div className="w-full xl:max-w-5xl">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_1fr_1fr]">
+              <label className="block">
+                <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">Organization</span>
+                <select
+                  value={exportFilters.orgId}
+                  onChange={(event) => setExportFilters((current) => ({ ...current, orgId: event.target.value }))}
+                  className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                >
+                  <option value="">Select organization</option>
+                  {organizationOptions.map((organization) => (
+                    <option key={organization.name} value={organization.name}>
+                      {organization.name} ({organization.value} case{organization.value === 1 ? '' : 's'})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">Start date</span>
+                <input
+                  type="datetime-local"
+                  value={exportFilters.startDate}
+                  onChange={(event) => setExportFilters((current) => ({ ...current, startDate: event.target.value }))}
+                  className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">End date</span>
+                <input
+                  type="datetime-local"
+                  value={exportFilters.endDate}
+                  onChange={(event) => setExportFilters((current) => ({ ...current, endDate: event.target.value }))}
+                  className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
+              <label className="block">
+                <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">Severity filter</span>
+                <select
+                  value={exportFilters.severity}
+                  onChange={(event) => setExportFilters((current) => ({ ...current, severity: event.target.value }))}
+                  className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                >
+                  <option value="">All severities</option>
+                  <option value="Critical">Critical</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs uppercase tracking-[0.24em] text-slate-400">Category filter</span>
+                <select
+                  value={exportFilters.category}
+                  onChange={(event) => setExportFilters((current) => ({ ...current, category: event.target.value }))}
+                  className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                >
+                  <option value="">All categories</option>
+                  {Object.keys(stats?.category_distribution || {}).map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={handleExportPdf}
+                  disabled={exporting || !exportFilters.orgId}
+                  className="terminal-text w-full rounded-[18px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-slate-950 disabled:opacity-60 xl:min-w-[220px]"
+                >
+                  {exporting ? `Exporting ${downloadProgress || 0}%` : 'Export PDF Report'}
+                </button>
+              </div>
+            </div>
+
+            <p className="mt-3 text-xs uppercase tracking-[0.2em] text-slate-500">
+              Reports are exported for the selected organization only.
+            </p>
           </div>
         </div>
         {exporting ? (

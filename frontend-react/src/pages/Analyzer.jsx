@@ -52,7 +52,6 @@ function Analyzer() {
   const [intelResponse, setIntelResponse] = useState(null)
   const [intelLoading, setIntelLoading] = useState(false)
   const [toast, setToast] = useState('')
-  const [streamFrame, setStreamFrame] = useState('')
   const [lastCaseUpdateCount, setLastCaseUpdateCount] = useState(0)
 
   const summaryText = useMemo(() => {
@@ -60,7 +59,7 @@ function Analyzer() {
       return ''
     }
 
-    return `Threat ${result.threat_type} detected with ${result.risk_level} risk, priority ${result.alert_priority?.priority || 'LOW'}, and ${(result.confidence_score * 100).toFixed(1)} percent confidence.`
+    return `${result.threat_type} indicators were detected. Current risk is ${result.risk_level.toLowerCase()}, response priority is ${(result.alert_priority?.priority || 'LOW').toLowerCase()}, and confidence is ${(result.confidence_score * 100).toFixed(1)} percent.`
   }, [result])
 
   const typedSummary = useTypedText(summaryText)
@@ -72,7 +71,7 @@ function Analyzer() {
     const collectionSummary = intelResponse.summary
     if (intelResponse.count > 0) {
       if (collectionSummary) {
-        return `${intelResponse.demo_mode ? 'Generated' : 'Collected'} ${intelResponse.count} corroborated source finding${intelResponse.count > 1 ? 's' : ''} across ${collectionSummary.source_count || intelResponse.platforms?.length || 0} source${(collectionSummary.source_count || intelResponse.platforms?.length || 0) === 1 ? '' : 's'} for ${intelResponse.organization}. Combined priority is ${collectionSummary.combined_priority?.priority || 'LOW'} at score ${collectionSummary.combined_priority?.priority_score || 0}, with ${collectionSummary.estimated_total_records_label || 'unknown leak volume'}. ${lastCaseUpdateCount ? `${lastCaseUpdateCount} monitoring case${lastCaseUpdateCount === 1 ? '' : 's'} updated for the Monitor workspace.` : ''}`
+        return `${intelResponse.demo_mode ? 'Generated' : 'Collected'} ${intelResponse.count} corroborated source finding${intelResponse.count > 1 ? 's' : ''} across ${collectionSummary.source_count || intelResponse.platforms?.length || 0} source${(collectionSummary.source_count || intelResponse.platforms?.length || 0) === 1 ? '' : 's'} for ${intelResponse.organization}. Current priority is ${(collectionSummary.combined_priority?.priority || 'LOW').toLowerCase()} with an estimated exposure size of ${collectionSummary.estimated_total_records_label || 'unknown volume'}. ${lastCaseUpdateCount ? `${lastCaseUpdateCount} monitoring case${lastCaseUpdateCount === 1 ? '' : 's'} updated in the Monitor workspace.` : ''}`
       }
 
       return `${intelResponse.demo_mode ? 'Generated' : 'Collected'} ${intelResponse.count} source intelligence result${intelResponse.count > 1 ? 's' : ''} across ${intelResponse.platforms?.length || 0} platform${intelResponse.platforms?.length === 1 ? '' : 's'} for ${intelResponse.organization}.`
@@ -85,10 +84,10 @@ function Analyzer() {
   const consoleLines = useMemo(() => {
     if (loading) {
       return [
-        'Scanning dark web marketplaces...',
-        'Cross-checking semantic signatures...',
-        'Threat signature detected...',
-        'Entity extraction pipeline active...',
+        'Reviewing the submitted text for confirmed exposure signals...',
+        'Checking whether the content matches known leak patterns...',
+        'Looking for organization assets and supporting evidence...',
+        'Preparing a plain-language assessment...',
       ]
     }
 
@@ -97,24 +96,13 @@ function Analyzer() {
     }
 
     return [
-      `Threat class resolved to ${result.threat_type}.`,
-      `Risk level calibrated to ${result.risk_level}.`,
-      `Detected ${result.entities?.length || 0} entities and ${Object.values(result.patterns || {}).flat().length} pattern hits.`,
-      `Correlation engine found ${result.correlation?.correlated_alerts_count || 0} linked alerts.`,
-      `Impact score ${result.impact_assessment?.impact_score || 0}; priority ${result.alert_priority?.priority || 'LOW'}.`,
+      `Assessment: ${result.threat_type}.`,
+      `Risk level: ${result.risk_level}.`,
+      `Confirmed entities: ${result.entities?.length || 0}; supporting pattern hits: ${Object.values(result.patterns || {}).flat().length}.`,
+      `Historical support: ${result.correlation?.correlated_alerts_count || 0} linked alert(s).`,
+      `Impact score ${result.impact_assessment?.impact_score || 0}; response priority ${result.alert_priority?.priority || 'LOW'}.`,
     ]
   }, [loading, result])
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      const frame = Array.from({ length: 7 }, (_, rowIndex) =>
-        Array.from({ length: 30 }, (_, colIndex) => ((rowIndex * 17 + colIndex * 13 + Date.now()) % 16).toString(16).toUpperCase()).join(' '),
-      ).join('\n')
-      setStreamFrame(frame)
-    }, 280)
-
-    return () => window.clearInterval(intervalId)
-  }, [])
 
   useEffect(() => {
     if (!toast) {
@@ -198,11 +186,11 @@ function Analyzer() {
           animate={{ opacity: 1, x: 0 }}
           className="glass-card neon-panel rounded-[32px] p-6"
         >
-          <p className="text-xs uppercase tracking-[0.38em] text-[#00E5FF]">Neural Threat Analyzer</p>
-          <h2 className="mt-3 text-4xl font-semibold text-white">Active Surveillance of High-Risk Channels</h2>
+          <p className="text-xs uppercase tracking-[0.38em] text-[#00E5FF]">Threat Review Workspace</p>
+          <h2 className="mt-3 text-4xl font-semibold text-white">Review suspicious text in plain language</h2>
           <p className="mt-4 max-w-3xl text-sm text-slate-300">
-            Interrogate suspicious marketplace posts, leak previews, phishing lures, and malware sale listings
-            using the existing backend intelligence pipeline.
+            Paste suspicious text, leak previews, phishing lures, or marketplace chatter here. CITADEL will look
+            for exposure evidence and explain the result in terms a security or business team can understand.
           </p>
 
           <div className="mt-6 grid gap-4 lg:grid-cols-[1fr_auto]">
@@ -220,13 +208,13 @@ function Analyzer() {
 
             <div className="grid gap-4">
               <div className="glass-card rounded-[28px] px-5 py-4">
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Threat score</p>
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Confidence</p>
                 <p className="mt-2 text-3xl font-semibold text-white">
                   {result ? `${Math.round(result.confidence_score * 100)}%` : '--'}
                 </p>
               </div>
               <div className="glass-card rounded-[28px] px-5 py-4">
-                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Signal status</p>
+                <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Assessment</p>
                 <p className="mt-2 text-3xl font-semibold text-[#00FF9F]">{result?.threat_type || 'Idle'}</p>
               </div>
             </div>
@@ -253,7 +241,7 @@ function Analyzer() {
               onClick={handleAnalyze}
               className="terminal-text rounded-[22px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-6 py-3 text-sm font-bold uppercase tracking-[0.28em] text-slate-950 shadow-[0_0_28px_rgba(0,229,255,0.28)] transition"
             >
-              Initiate Deep Scan
+              Analyze Text
             </Motion.button>
           </div>
         </Motion.section>
@@ -266,19 +254,25 @@ function Analyzer() {
           <CircularProgress
             value={result ? result.confidence_score * 100 : 6}
             riskLevel={result?.risk_level || 'LOW'}
-            label="Threat level"
+            label="Confidence level"
           />
 
           <div className="glass-card neon-panel rounded-[28px] p-5">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">Data stream</p>
+              <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">What this scan checks</p>
               <div className="terminal-text flicker text-[11px] uppercase tracking-[0.28em] text-slate-500">
-                encrypted telemetry
+                analyst guidance
               </div>
             </div>
-            <pre className="terminal-text flicker min-h-[220px] overflow-hidden rounded-[22px] border border-white/8 bg-[#020617]/85 p-4 text-xs leading-6 text-[#00E5FF]">
-              {streamFrame}
-            </pre>
+            <div className="min-h-[220px] rounded-[22px] border border-white/8 bg-[#020617]/85 p-4 text-sm leading-7 text-slate-200">
+              <p>CITADEL reviews:</p>
+              <ul className="mt-3 space-y-2">
+                <li>1. Whether the text contains real organization assets such as domains, emails, IPs, tokens, or wallets.</li>
+                <li>2. Whether the evidence points to an actual leak, credential exposure, phishing lure, or unrelated noise.</li>
+                <li>3. Whether the result is strong enough to justify analyst action.</li>
+                <li>4. What a security team should verify next if the signal appears credible.</li>
+              </ul>
+            </div>
           </div>
         </Motion.section>
       </div>
@@ -288,14 +282,14 @@ function Analyzer() {
 
         <div className="space-y-6">
           <div className="glass-card neon-panel rounded-[28px] p-5">
-            <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">Verdict Channel</p>
+            <p className="text-xs uppercase tracking-[0.34em] text-[#00FF9F]">Assessment Summary</p>
             <div className="mt-4 min-h-28 rounded-[22px] border border-white/8 bg-black/10 p-4">
               {loading ? (
-                <Loader label="Running regex, NLP, and model inference..." />
+                <Loader label="Reviewing the text and preparing a readable assessment..." />
               ) : typedSummary ? (
                 <p className="text-lg leading-8 text-slate-100">{typedSummary}</p>
               ) : (
-                <p className="text-slate-400">Run a scan to surface threat classification, extracted entities, and confidence details.</p>
+                <p className="text-slate-400">Run an analysis to see what happened, why it matters, and what should be checked next.</p>
               )}
             </div>
           </div>

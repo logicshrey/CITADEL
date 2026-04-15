@@ -20,6 +20,13 @@ function flattenAssets(assets) {
   return Object.values(assets).flat().filter(Boolean)
 }
 
+function toPercent(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 0
+  }
+  return value <= 1 ? Math.round(value * 100) : Math.round(value)
+}
+
 function CaseDetailPanel({ selectedCase, onSave }) {
   const [caseStatus, setCaseStatus] = useState('new')
   const [owner, setOwner] = useState('Unassigned')
@@ -69,6 +76,17 @@ function CaseDetailPanel({ selectedCase, onSave }) {
     ['Wallets', selectedCase.affected_assets?.wallets],
   ]
   const evidenceItems = selectedCase.evidence || []
+  const executiveSummary = selectedCase.exposure_summary || selectedCase.executive_summary || selectedCase.summary
+  const technicalSummary =
+    selectedCase.technical_summary && selectedCase.technical_summary !== executiveSummary
+      ? selectedCase.technical_summary
+      : ''
+  const corroborationText =
+    (selectedCase.source_count || 0) <= 1
+      ? 'This case currently relies on one monitored source.'
+      : `${selectedCase.corroborating_source_count || 0} additional corroborating source(s) support this case.`
+  const confidencePercent = toPercent(selectedCase.confidence_score || 0)
+  const attentionReasons = selectedCase.why_flagged || selectedCase.why_this_was_flagged || selectedCase.confidence_assessment?.reasons || []
 
   return (
     <div className="glass-card neon-panel rounded-[32px] p-6">
@@ -76,8 +94,8 @@ function CaseDetailPanel({ selectedCase, onSave }) {
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-[#00E5FF]">Case Detail</p>
           <h3 className="mt-2 text-2xl font-semibold text-white">{selectedCase.title}</h3>
-          <p className="mt-3 text-sm text-slate-300">{selectedCase.exposure_summary || selectedCase.executive_summary || selectedCase.summary}</p>
-          <p className="mt-3 text-sm text-slate-400">{selectedCase.technical_summary || selectedCase.summary}</p>
+          <p className="mt-3 text-sm text-slate-300">{executiveSummary}</p>
+          {technicalSummary ? <p className="mt-3 text-sm text-slate-400">{technicalSummary}</p> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <RiskBadge level={selectedCase.risk_level || 'LOW'} />
@@ -88,7 +106,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
             Priority {selectedCase.priority}
           </div>
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
-            Confidence {selectedCase.confidence_score || 0}
+            Confidence {confidencePercent}%
           </div>
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
             {selectedCase.triage_status || selectedCase.case_status}
@@ -98,41 +116,41 @@ function CaseDetailPanel({ selectedCase, onSave }) {
 
       <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Affected Assets</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Confirmed organization assets</p>
           <p className="mt-2 text-sm text-slate-200">{formatList(flattenAssets(selectedCase.affected_assets), 'Unknown assets')}</p>
         </div>
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Leak Data</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Confirmed exposed data</p>
           <p className="mt-2 text-sm text-slate-200">{formatList(selectedCase.exposed_data_types, 'Undetermined')}</p>
         </div>
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Exposure Estimate</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Estimated exposure size</p>
           <p className="mt-2 text-sm text-slate-200">{selectedCase.estimated_total_records_label || 'Unknown exposure'}</p>
         </div>
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Corroboration</p>
-          <p className="mt-2 text-sm text-slate-200">
-            {selectedCase.corroborating_source_count || 0} additional corroborating source(s)
-          </p>
+          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Source support</p>
+          <p className="mt-2 text-sm text-slate-200">{corroborationText}</p>
         </div>
       </div>
 
       <div className="mt-6 grid gap-4 xl:grid-cols-[1fr_0.9fr]">
         <div className="space-y-4">
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Why This Was Flagged</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Why this case needs attention</p>
             <ul className="mt-3 space-y-2 text-sm text-slate-200">
-              {(selectedCase.why_this_was_flagged || selectedCase.confidence_assessment?.reasons || []).map((line) => (
+              {attentionReasons.map((line) => (
                 <li key={line}>• {line}</li>
               ))}
             </ul>
           </div>
+          {selectedCase.severity_reason ? (
+            <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+              <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Why the severity was assigned</p>
+              <p className="mt-3 text-sm text-slate-200">{selectedCase.severity_reason}</p>
+            </div>
+          ) : null}
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Severity Reason</p>
-            <p className="mt-3 text-sm text-slate-200">{selectedCase.severity_reason}</p>
-          </div>
-          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Structured Impacted Assets</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Confirmed organization assets</p>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {assetSections.map(([label, values]) => (
                 <div key={label} className="rounded-[18px] border border-white/8 bg-white/5 p-3">
@@ -151,7 +169,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
             </ul>
           </div>
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Confidence Basis</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Evidence and reasoning</p>
             <ul className="mt-3 space-y-2 text-sm text-slate-200">
               {(selectedCase.confidence_basis || []).map((line) => (
                 <li key={line}>• {line}</li>
@@ -162,7 +180,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
 
         <div className="space-y-4">
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Workflow</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Investigation workflow</p>
             <div className="mt-4 space-y-3">
               <label className="block">
                 <span className="text-xs uppercase tracking-[0.22em] text-slate-500">Status</span>
@@ -215,7 +233,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
           </div>
 
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Evidence Preview</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Supporting evidence</p>
             <div className="mt-3 space-y-3">
               {evidenceItems.length ? (
                 evidenceItems.slice(0, 4).map((item) => (
@@ -228,7 +246,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
                     </div>
                     <p className="mt-2 text-sm text-slate-200">{item.cleaned_snippet || item.legacy_summary || item.raw_snippet}</p>
                     <p className="mt-2 text-xs uppercase tracking-[0.22em] text-slate-500">
-                      Entities: {formatList(item.matched_entities, 'None')}
+                      Related assets: {formatList(item.matched_entities, 'None')}
                     </p>
                   </div>
                 ))
@@ -239,7 +257,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
           </div>
 
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Sources</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Where this was observed</p>
             <div className="mt-3 space-y-3">
               {(selectedCase.sources || []).map((source) => (
                 <div key={`${source.source}-${source.first_seen}`} className="rounded-[18px] border border-white/8 bg-white/5 p-3">
@@ -248,7 +266,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
                     Locations: {formatList(source.source_locations, 'No source locations')}
                   </p>
                   <p className="mt-1 text-xs uppercase tracking-[0.22em] text-slate-500">
-                    Evidence {source.evidence_count || 0} | trust {source.trust_score || 0} | last seen {source.last_seen ? new Date(source.last_seen).toLocaleString() : 'unknown'}
+                    Evidence items {source.evidence_count || 0} | trust score {toPercent(source.trust_score || 0)} | last seen {source.last_seen ? new Date(source.last_seen).toLocaleString() : 'unknown'}
                   </p>
                 </div>
               ))}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import logging
 import math
 import re
 from datetime import datetime, timezone
@@ -9,6 +10,10 @@ from typing import Any
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+from intelligence.correlation import assess_correlation
+from intelligence.relevance_engine import assess_organization_relevance, flatten_relevant_assets, resolve_organization_profile
+from intelligence.scoring import score_case
+from intelligence.validators import filter_pattern_matches, validate_entities
 from utils.config import LABELS, THREAT_TEMPLATES
 from utils.db import MongoManager
 from utils.intel_enrichment import (
@@ -45,6 +50,8 @@ SIMULATION_TEXTS = [
     "Ransomware toolkit for sale with crypter and loader access",
     "Normal harmless discussion on secure app permissions and developer updates",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class ThreatIntelligenceEngine:
@@ -167,6 +174,7 @@ class ThreatIntelligenceEngine:
         recent_alerts = self.db.fetch_alerts(limit=200)
         findings: list[dict[str, Any]] = []
         case_updates: list[dict[str, Any]] = []
+        organization_profile = resolve_organization_profile(query)
 
         for finding in collection.get("findings", []):
             result = self._build_external_finding_result(
@@ -175,18 +183,23 @@ class ThreatIntelligenceEngine:
                 platforms=collection.get("platforms", []),
                 recent_alerts=recent_alerts,
             )
+            result = self._apply_relevance_assessment(result=result, organization_profile=organization_profile)
+            correlation_assessment = assess_correlation(query=query, result=result)
+            result["correlation_assessment"] = correlation_assessment.to_dict()
+            result["case_creation_eligible"] = correlation_assessment.should_create_case
             storage_status = self._persist_result_alert(result, persist=persist)
             result["storage"] = storage_status
             if self.db.warning:
                 result["warning"] = self.db.warning
             findings.append(result)
             recent_alerts.append({"results": result})
-            if persist:
+            if persist and correlation_assessment.should_create_case:
                 case_record, action = self.db.save_case(
                     self._build_exposure_case(
                         query=query,
                         result=result,
                         watchlist=None,
+                        correlation_assessment=correlation_assessment.to_dict(),
                     )
                 )
                 case_updates.append(
@@ -197,6 +210,9 @@ class ThreatIntelligenceEngine:
                         "priority": case_record.get("priority"),
                     }
                 )
+            elif persist:
+                summary = ", ".join(correlation_assessment.reasoning[:2]) or "Correlation threshold not met."
+                result.setdefault("explanation", []).append(f"Case creation skipped: {summary}")
 
         summary = self._build_external_collection_summary(
             query=query,
@@ -221,13 +237,21 @@ class ThreatIntelligenceEngine:
         demo_mode = bool(watchlist.get("demo_mode", False))
         response = self.collect_external_intelligence(query, persist=False, demo=demo_mode)
         updates: list[dict[str, Any]] = []
+        organization_profile = resolve_organization_profile(query, watchlist=watchlist)
 
         for result in response.get("findings", []):
+            result = self._apply_relevance_assessment(result=result, organization_profile=organization_profile)
+            correlation_assessment = assess_correlation(query=query, result=result, watchlist=watchlist)
+            result["correlation_assessment"] = correlation_assessment.to_dict()
+            result["case_creation_eligible"] = correlation_assessment.should_create_case
+            if not correlation_assessment.should_create_case:
+                continue
             case_record, action = self.db.save_case(
                 self._build_exposure_case(
                     query=query,
                     result=result,
                     watchlist=watchlist,
+                    correlation_assessment=correlation_assessment.to_dict(),
                 )
             )
             updates.append({"action": action, "case": case_record})
@@ -252,7 +276,7 @@ class ThreatIntelligenceEngine:
         for pattern_name, pattern in REGEX_PATTERNS.items():
             unique_matches = list(dict.fromkeys(pattern.findall(text)))
             matches[pattern_name] = unique_matches
-        return matches
+        return filter_pattern_matches(matches)
 
     def extract_entities(self, text: str) -> list[dict[str, str]]:
         nlp = self._load_spacy()
@@ -264,7 +288,7 @@ class ThreatIntelligenceEngine:
         for ent in doc.ents:
             if ent.label_ in {"ORG", "PERSON", "GPE"}:
                 entities.append({"text": ent.text, "label": ent.label_})
-        return entities
+        return validate_entities(entities)
 
     def semantic_similarity(self, text: str) -> dict[str, Any]:
         templates = []
@@ -394,12 +418,14 @@ class ThreatIntelligenceEngine:
 
         entities = self.extract_entities(original_text)
         enriched_entities = extract_enriched_entities(original_text, regex_matches)
-        external_entities = [
+        external_entities = validate_entities(
+            [
             {"text": finding.get("organization", query), "label": "ORG"},
             *({"text": email, "label": "EMAIL"} for email in finding.get("emails", [])),
             *({"text": username, "label": "USERNAME"} for username in finding.get("usernames", [])),
             {"text": finding.get("source", "Unknown"), "label": "PLATFORM"},
-        ]
+            ]
+        )
         all_entities = self._merge_entities(entities, [*enriched_entities, *external_entities])
 
         semantic_matches = self.semantic_similarity(analysis_text)
@@ -521,6 +547,63 @@ class ThreatIntelligenceEngine:
         result["correlation"] = correlation
         result["impact_assessment"] = impact_assessment
         result["alert_priority"] = alert_priority
+        return result
+
+    def _apply_relevance_assessment(
+        self,
+        *,
+        result: dict[str, Any],
+        organization_profile: dict[str, Any] | Any,
+    ) -> dict[str, Any]:
+        external = result.get("external_intelligence", {})
+        candidate_entities = list(result.get("entities", []))
+
+        for bucket, entity_type in (("domains", "DOMAIN"), ("emails", "EMAIL"), ("ips", "IP")):
+            for value in result.get("patterns", {}).get(bucket, []):
+                candidate_entities.append({"text": value, "label": entity_type})
+        for value in external.get("usernames", []):
+            candidate_entities.append({"text": value, "label": "USERNAME"})
+        for value in external.get("affected_assets", []):
+            label = "EMAIL" if "@" in str(value) else "DOMAIN" if "." in str(value) and ":" not in str(value) else "USERNAME"
+            candidate_entities.append({"text": value, "label": label})
+        for value in external.get("matched_indicators", []):
+            label = "EMAIL" if "@" in str(value) else "IP" if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", str(value)) else "DOMAIN" if "." in str(value) and ":" not in str(value) else "USERNAME"
+            candidate_entities.append({"text": value, "label": label})
+
+        assessment = assess_organization_relevance(
+            profile=organization_profile,
+            extracted_entities=candidate_entities,
+            raw_evidence_snippet=str(result.get("input_text") or result.get("cleaned_text") or ""),
+            source_metadata=external,
+        )
+        public_assessment = assessment.to_public_dict()
+        result["relevance_assessment"] = public_assessment
+        result["entities"] = public_assessment["filtered_entities"]
+        result["external_intelligence"]["affected_assets"] = public_assessment["matched_assets_flat"]
+        result["external_intelligence"]["matched_indicators"] = list(public_assessment["matched_indicators"])
+        result["external_intelligence"]["emails"] = list(public_assessment["matched_assets"].get("emails", []))
+        result["external_intelligence"]["usernames"] = list(public_assessment["matched_assets"].get("usernames", []))
+        result["external_intelligence"]["verification_status"] = public_assessment["verification_status"]
+        result["external_intelligence"]["verified_org_match"] = public_assessment["verified_org_match"]
+        result["external_intelligence"]["relevance_score"] = public_assessment["relevance_score"]
+        result["external_intelligence"]["relevance_reasons"] = list(public_assessment["relevance_reasons"])
+        result["external_intelligence"]["suppressed_noise"] = public_assessment["suppressed_noise"]
+        result["external_intelligence"]["suppression_reasons"] = list(public_assessment["suppression_reasons"])
+        result["confidence_assessment"]["reasons"] = [
+            *list(result.get("confidence_assessment", {}).get("reasons", [])),
+            *public_assessment["relevance_reasons"][:4],
+        ]
+        result.setdefault("explanation", []).append(
+            f"Organization relevance score {public_assessment['relevance_score']} with verification status {public_assessment['verification_status']}."
+        )
+        for reason in public_assessment["suppression_reasons"][:2]:
+            result["explanation"].append(f"Suppression check: {reason}")
+        if public_assessment["suppressed_noise"]:
+            logger.debug(
+                "Suppressed noise for %s: %s",
+                organization_profile.org_name,
+                " | ".join(public_assessment["suppression_reasons"]),
+            )
         return result
 
     def _build_external_collection_summary(
@@ -772,8 +855,12 @@ class ThreatIntelligenceEngine:
         query: str,
         result: dict[str, Any],
         watchlist: dict[str, Any] | None,
+        correlation_assessment: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         external = result.get("external_intelligence", {})
+        correlation_assessment = correlation_assessment or result.get("correlation_assessment", {})
+        relevance_assessment = result.get("relevance_assessment", {})
+        case_score = score_case(result, correlation_assessment)
         source_name = str(external.get("source") or result.get("source") or "Unknown")
         organization = str(external.get("organization") or query)
         matched_indicators = list(external.get("matched_indicators", []))
@@ -788,14 +875,19 @@ class ThreatIntelligenceEngine:
             exposed_data_types=exposed_data_types,
         )
         confidence_basis = [
-            f"Priority score {result.get('alert_priority', {}).get('priority_score', 0)} from risk, impact, and correlation scoring.",
+            f"Correlation score {correlation_assessment.get('correlation_score', 0)} passed the case threshold.",
             f"Source {source_name} reported {external.get('estimated_records') or 'an undisclosed amount of'} exposure.",
             *confidence_reasons[:4],
-            *list(result.get("explanation", []))[:3],
+            *list(correlation_assessment.get("reasoning", []))[:3],
         ]
         source_locations = list(external.get("source_locations", []))
         technical_summary = external.get("summary") or result.get("impact_assessment", {}).get("summary") or "Exposure detected."
-        exposure_summary = self._build_executive_case_summary(result, external)
+        exposure_summary = self._build_executive_case_summary(
+            result=result,
+            external=external,
+            case_score=case_score.to_dict(),
+            affected_assets=affected_assets,
+        )
         leak_channel, leak_post_url = choose_primary_location(source_locations)
         event_signature = str(
             external.get("event_signature")
@@ -836,6 +928,7 @@ class ThreatIntelligenceEngine:
         case_payload = {
             "event_signature": event_signature,
             "fingerprint_key": fingerprint_key,
+            "occurrence_count": 1,
             "org_id": organization,
             "organization": organization,
             "query": query,
@@ -850,17 +943,28 @@ class ThreatIntelligenceEngine:
             "owner": str((watchlist or {}).get("owner") or "Unassigned"),
             "assigned_to": str((watchlist or {}).get("owner") or "Unassigned"),
             "business_unit": business_unit,
-            "priority": result.get("alert_priority", {}).get("priority", "LOW"),
-            "priority_score": int(result.get("alert_priority", {}).get("priority_score", 0) or 0),
-            "risk_level": result.get("risk_level", "LOW"),
-            "confidence_score": float(result.get("confidence_score", 0.0) or 0.0),
+            "priority": case_score.priority,
+            "priority_score": case_score.priority_score,
+            "severity_score": case_score.severity_score,
+            "risk_level": case_score.risk_level,
+            "confidence_score": case_score.confidence_score,
             "confidence_assessment": {
-                "score": int(result.get("confidence_assessment", {}).get("score", 0) or 0),
-                "reasons": confidence_reasons,
+                "score": case_score.confidence_score,
+                "reasons": case_score.confidence_reasoning,
             },
-            "why_this_was_flagged": confidence_reasons,
+            "why_flagged": case_score.why_flagged,
+            "why_this_was_flagged": case_score.why_flagged,
+            "correlation_reason": list(correlation_assessment.get("reasoning", [])),
+            "confidence_reasoning": case_score.confidence_reasoning,
+            "severity_reasoning": case_score.severity_reasoning,
+            "relevance_score": int(relevance_assessment.get("relevance_score", 0) or 0),
+            "relevance_reasons": list(relevance_assessment.get("relevance_reasons", [])),
+            "verified_org_match": bool(relevance_assessment.get("verified_org_match", False)),
+            "verification_status": str(relevance_assessment.get("verification_status") or "NO"),
+            "suppressed_noise": bool(relevance_assessment.get("suppressed_noise", False)),
+            "suppression_reasons": list(relevance_assessment.get("suppression_reasons", [])),
             "threat_type": result.get("threat_type"),
-            "severity_reason": self._severity_reason_for_case(result, external),
+            "severity_reason": case_score.severity_reason,
             "affected_assets": affected_assets,
             "matched_indicators": matched_indicators,
             "exposed_data_types": exposed_data_types,
@@ -952,12 +1056,27 @@ class ThreatIntelligenceEngine:
         return "Security Operations"
 
     @staticmethod
-    def _build_executive_case_summary(result: dict[str, Any], external: dict[str, Any]) -> str:
+    def _build_executive_case_summary(
+        result: dict[str, Any],
+        external: dict[str, Any],
+        case_score: dict[str, Any] | None = None,
+        affected_assets: list[str] | None = None,
+    ) -> str:
+        case_score = case_score or {}
+        affected_assets = affected_assets or list(external.get("affected_assets", []))
+        asset_preview = ", ".join(list(dict.fromkeys(affected_assets))[:3]) or "none verified"
+        severity_label = case_score.get("severity") or result.get("risk_level", "Low").title()
+        if not affected_assets:
+            return (
+                f"{external.get('source', 'A monitored source')} produced a weak signal linked to "
+                f"{external.get('organization', 'the organization')}. No verified organization-owned assets were "
+                "identified, so this finding requires manual verification before escalation."
+            )
         return (
             f"{external.get('source', 'A monitored source')} exposed {external.get('estimated_records') or 'an unknown amount of data'} "
-            f"linked to {external.get('organization', 'the organization')}. Priority is "
-            f"{result.get('alert_priority', {}).get('priority', 'LOW')} due to {result.get('threat_type', 'detected exposure').lower()} "
-            f"signals and the affected assets {', '.join(external.get('affected_assets', [])[:3]) or 'still being identified'}."
+            f"linked to {external.get('organization', 'the organization')}. Severity is "
+            f"{severity_label} due to {result.get('threat_type', 'detected exposure').lower()} "
+            f"signals and the affected assets {asset_preview}."
         )
 
     @staticmethod

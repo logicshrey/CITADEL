@@ -4,8 +4,57 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from reportlab.platypus import Paragraph, Table
+
 from utils.intel_enrichment import correlate_alerts
-from utils.reporting import generate_pdf_report
+from utils.reporting import _build_report_story, filter_cases, generate_pdf_report
+
+
+def make_case(
+    *,
+    org_id: str = "acme.com",
+    title: str = "Acme exposure detected via Dehashed",
+    summary: str = "A credential leak affecting Acme requires review.",
+    domains: list[str] | None = None,
+    emails: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "id": f"case_{org_id}_{title[:10].replace(' ', '_')}",
+        "case_id": f"case_{org_id}_{title[:10].replace(' ', '_')}",
+        "org_id": org_id,
+        "organization": org_id,
+        "title": title,
+        "category": "Credential Leak",
+        "severity": "High",
+        "confidence_score": 88,
+        "risk_score": 83,
+        "affected_assets": {
+            "domains": domains or [org_id],
+            "emails": emails or [f"admin@{org_id}"],
+            "ips": [],
+            "usernames": [f"{org_id.split('.')[0]}_admin"],
+            "tokens": [],
+            "wallets": [],
+        },
+        "sources": [{"source": "Dehashed", "source_locations": [f"dataset:{org_id}-breach"]}],
+        "evidence": [
+            {
+                "evidence_id": "e1",
+                "source_platform": "Dehashed",
+                "cleaned_snippet": f"Credential dump includes admin@{org_id} and password hashes.",
+                "timestamp": "2026-04-15T00:00:00+00:00",
+            }
+        ],
+        "matched_indicators": [org_id, f"admin@{org_id}"],
+        "why_this_was_flagged": ["Direct monitored domain or indicator match."],
+        "recommended_actions": ["Reset credentials and review MFA."],
+        "exposure_summary": summary,
+        "technical_summary": f"Dehashed-style breach evidence exposed an {org_id} administrator account.",
+        "created_at": "2026-04-15T00:00:00+00:00",
+        "updated_at": "2026-04-15T00:00:00+00:00",
+        "first_seen": "2026-04-15T00:00:00+00:00",
+        "last_seen": "2026-04-15T00:00:00+00:00",
+    }
 
 
 class ReportingTests(unittest.TestCase):
@@ -36,43 +85,7 @@ class ReportingTests(unittest.TestCase):
         self.assertGreaterEqual(correlation["campaign_score"], 50)
 
     def test_pdf_report_is_generated(self) -> None:
-        case = {
-            "id": "case_demo_1",
-            "case_id": "case_demo_1",
-            "org_id": "acme.com",
-            "organization": "acme.com",
-            "title": "Acme exposure detected via Dehashed",
-            "category": "Credential Leak",
-            "severity": "High",
-            "confidence_score": 88,
-            "risk_score": 83,
-            "affected_assets": {
-                "domains": ["acme.com"],
-                "emails": ["admin@acme.com"],
-                "ips": [],
-                "usernames": ["acme_admin"],
-                "tokens": [],
-                "wallets": [],
-            },
-            "sources": [{"source": "Dehashed", "source_locations": ["dataset:acme-breach"]}],
-            "evidence": [
-                {
-                    "evidence_id": "e1",
-                    "source_platform": "Dehashed",
-                    "cleaned_snippet": "Credential dump includes admin@acme.com and password hashes.",
-                    "timestamp": "2026-04-15T00:00:00+00:00",
-                }
-            ],
-            "matched_indicators": ["acme.com", "admin@acme.com"],
-            "why_this_was_flagged": ["Direct monitored domain or indicator match."],
-            "recommended_actions": ["Reset credentials and review MFA."],
-            "exposure_summary": "A credential leak affecting Acme requires review.",
-            "technical_summary": "Dehashed-style breach evidence exposed an Acme administrator account.",
-            "created_at": "2026-04-15T00:00:00+00:00",
-            "updated_at": "2026-04-15T00:00:00+00:00",
-            "first_seen": "2026-04-15T00:00:00+00:00",
-            "last_seen": "2026-04-15T00:00:00+00:00",
-        }
+        case = make_case()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             original_tempdir = tempfile.tempdir
@@ -84,6 +97,76 @@ class ReportingTests(unittest.TestCase):
                 self.assertGreater(Path(pdf_path).stat().st_size, 1000)
             finally:
                 tempfile.tempdir = original_tempdir
+
+    def test_report_story_uses_requested_org_on_cover_page(self) -> None:
+        story = _build_report_story(cases=[make_case()], start_date=None, end_date=None, org_id="acme.com")
+        cover_line = next(
+            block.getPlainText()
+            for block in story
+            if isinstance(block, Paragraph) and block.getPlainText().startswith("Organization:")
+        )
+        self.assertEqual(cover_line, "Organization: acme.com")
+
+    def test_multi_org_story_labels_cover_as_multiple_organizations(self) -> None:
+        story = _build_report_story(
+            cases=[make_case(org_id="acme.com"), make_case(org_id="globex.com")],
+            start_date=None,
+            end_date=None,
+            org_id=None,
+        )
+        cover_line = next(
+            block.getPlainText()
+            for block in story
+            if isinstance(block, Paragraph) and block.getPlainText().startswith("Organization:")
+        )
+        self.assertEqual(cover_line, "Organization: Multiple organizations (2)")
+
+    def test_filter_cases_excludes_legacy_noise_cases(self) -> None:
+        noisy_case = make_case(
+            org_id="claude",
+            title="Apache Server Status",
+            summary="Apache server status page shows server uptime and worker details.",
+            domains=[],
+            emails=[],
+        )
+        noisy_case["affected_assets"] = {
+            "domains": [],
+            "emails": [],
+            "ips": [],
+            "usernames": ["claude"],
+            "tokens": [],
+            "wallets": [],
+        }
+        filtered = filter_cases([noisy_case, make_case(org_id="acme.com")])
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["org_id"], "acme.com")
+
+    def test_filter_cases_excludes_suppressed_cases(self) -> None:
+        weak_case = make_case(org_id="sbi.co.in")
+        weak_case["suppressed_noise"] = True
+        weak_case["suppression_reasons"] = ["No verified organization-owned assets were retained."]
+        filtered = filter_cases([weak_case, make_case(org_id="acme.com")])
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["org_id"], "acme.com")
+
+    def test_case_summary_table_uses_wrapped_cells_and_fixed_widths(self) -> None:
+        long_case = make_case(
+            title="Acme exposure detected in a very long dataset title that should wrap inside the summary table",
+            summary="A very long summary exists so the generated report must wrap table cells rather than clipping content.",
+            domains=["portal.acme.com", "identity.acme.com", "partner.acme.com"],
+            emails=["security.operations.team@acme.com", "incident.response.team@acme.com"],
+        )
+        story = _build_report_story(cases=[long_case], start_date=None, end_date=None, org_id="acme.com")
+        summary_table = next(
+            block
+            for block in story
+            if isinstance(block, Table)
+            and isinstance(block._cellvalues[0][0], Paragraph)
+            and block._cellvalues[0][0].getPlainText() == "Case"
+        )
+        self.assertEqual(len(summary_table._colWidths), 5)
+        self.assertTrue(all(width > 0 for width in summary_table._colWidths))
+        self.assertIsInstance(summary_table._cellvalues[1][0], Paragraph)
 
 
 if __name__ == "__main__":

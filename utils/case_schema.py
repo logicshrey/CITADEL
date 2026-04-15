@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from intelligence.validators import validate_string_list
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -215,6 +216,7 @@ class ExposureCase(BaseModel):
     query: str = ""
     category: CaseCategory = "Unknown"
     severity: SeverityLevel = "Low"
+    severity_score: int = 0
     confidence_score: int = 0
     risk_score: int = 0
     affected_assets: AffectedAssets = Field(default_factory=AffectedAssets)
@@ -229,7 +231,17 @@ class ExposureCase(BaseModel):
     executive_summary: str = ""
     recommended_actions: list[str] = Field(default_factory=list)
     suggested_remediation_steps: list[str] = Field(default_factory=list)
+    why_flagged: list[str] = Field(default_factory=list)
     why_this_was_flagged: list[str] = Field(default_factory=list)
+    correlation_reason: list[str] = Field(default_factory=list)
+    confidence_reasoning: list[str] = Field(default_factory=list)
+    severity_reasoning: list[str] = Field(default_factory=list)
+    relevance_score: int = 0
+    relevance_reasons: list[str] = Field(default_factory=list)
+    verified_org_match: bool = False
+    verification_status: str = "NO"
+    suppressed_noise: bool = False
+    suppression_reasons: list[str] = Field(default_factory=list)
     confidence_assessment: ConfidenceAssessment = Field(default_factory=ConfidenceAssessment)
     triage_status: TriageStatus = "New"
     assigned_to: str = "Unassigned"
@@ -242,6 +254,7 @@ class ExposureCase(BaseModel):
     estimated_total_records_label: str = "Amount not disclosed by the source"
     event_signature: str = ""
     fingerprint_key: str = ""
+    occurrence_count: int = 1
     source_count: int = 0
     evidence_count: int = 0
     corroborating_source_count: int = 0
@@ -291,12 +304,16 @@ def normalize_affected_assets(payload: dict[str, Any]) -> AffectedAssets:
             evidence_entities.extend(_coerce_str_list(evidence.get("matched_entities")))
             evidence_entities.extend(_coerce_str_list(evidence.get("matched_indicators")))
 
-    tokens = _coerce_str_list(payload.get("tokens", []))
-    wallets = _coerce_str_list(payload.get("wallets", []))
+    tokens = validate_string_list("TOKEN", _coerce_str_list(payload.get("tokens", [])))
+    wallets = validate_string_list("WALLET", _coerce_str_list(payload.get("wallets", [])))
 
-    domains = [item for item in flat_assets if "." in item and "@" not in item and ":" not in item]
-    emails = [item for item in [*flat_assets, *matched_indicators, *evidence_entities] if "@" in item]
-    ips = [item for item in [*flat_assets, *matched_indicators] if item.count(".") == 3 and all(part.isdigit() for part in item.split("."))]
+    domain_inputs = [item for item in flat_assets if "." in item and "@" not in item and ":" not in item]
+    email_inputs = [item for item in [*flat_assets, *matched_indicators, *evidence_entities] if "@" in item]
+    ip_inputs = [*flat_assets, *matched_indicators]
+
+    domains = validate_string_list("DOMAIN", domain_inputs)
+    emails = validate_string_list("EMAIL", email_inputs)
+    ips = validate_string_list("IP", ip_inputs)
     usernames = [
         item
         for item in [*flat_assets, *matched_indicators, *evidence_entities]
@@ -392,6 +409,7 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
     evidence = normalize_evidence_list(data, default_source=source_names[0] if source_names else "Unknown")
     confidence_basis = _coerce_str_list(data.get("confidence_basis", []))
     why_this_was_flagged = _coerce_str_list(data.get("why_this_was_flagged", [])) or confidence_basis[:5]
+    why_flagged = _coerce_str_list(data.get("why_flagged", [])) or why_this_was_flagged
     confidence_score = max(0, min(100, round(_coerce_float(data.get("confidence_score"), 0.0) * (100 if _coerce_float(data.get("confidence_score"), 0.0) <= 1 else 1))))
     risk_score = max(
         0,
@@ -421,6 +439,7 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
         query=str(data.get("query") or data.get("organization") or ""),
         category=category,
         severity=severity,
+        severity_score=max(0, min(100, _coerce_int(data.get("severity_score"), priority_score))),
         confidence_score=confidence_score,
         risk_score=risk_score,
         affected_assets=canonical_assets,
@@ -443,10 +462,20 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
         suggested_remediation_steps=_coerce_str_list(
             data.get("suggested_remediation_steps") or data.get("recommended_actions", [])
         ),
+        why_flagged=why_flagged,
         why_this_was_flagged=why_this_was_flagged,
+        correlation_reason=_coerce_str_list(data.get("correlation_reason", [])),
+        confidence_reasoning=_coerce_str_list(data.get("confidence_reasoning", [])),
+        severity_reasoning=_coerce_str_list(data.get("severity_reasoning", [])),
+        relevance_score=max(0, min(100, _coerce_int(data.get("relevance_score"), 0))),
+        relevance_reasons=_coerce_str_list(data.get("relevance_reasons", [])),
+        verified_org_match=bool(data.get("verified_org_match", False)),
+        verification_status=str(data.get("verification_status") or ("YES" if data.get("verified_org_match") else "NO")),
+        suppressed_noise=bool(data.get("suppressed_noise", False)),
+        suppression_reasons=_coerce_str_list(data.get("suppression_reasons", [])),
         confidence_assessment=ConfidenceAssessment(
             score=confidence_score,
-            reasons=why_this_was_flagged,
+            reasons=why_flagged or why_this_was_flagged,
         ),
         triage_status=triage_status,
         assigned_to=assigned_to,
@@ -463,6 +492,7 @@ def normalize_case_record(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         event_signature=str(data.get("event_signature") or data.get("fingerprint_key") or case_id),
         fingerprint_key=str(data.get("fingerprint_key") or data.get("event_signature") or case_id),
+        occurrence_count=max(1, _coerce_int(data.get("occurrence_count"), 1)),
         source_count=len(sources),
         evidence_count=len(evidence),
         corroborating_source_count=max(0, len(sources) - 1),
