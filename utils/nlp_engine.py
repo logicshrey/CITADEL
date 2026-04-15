@@ -20,6 +20,7 @@ from utils.intel_enrichment import (
     prioritize_alert,
 )
 from utils.model_manager import ModelManager
+from utils.signal_quality import build_event_signature, choose_primary_location
 from utils.source_intel_service import ExternalIntelligenceService
 from utils.text_utils import clean_text
 
@@ -410,8 +411,9 @@ class ThreatIntelligenceEngine:
         )
 
         threat_type = str(finding.get("type") or self.resolve_threat_type(primary_prediction.label, semantic_matches))
+        source_confidence = float(finding.get("confidence_score", 0) or 0) / 100.0
         confidence = max(
-            0.7,
+            source_confidence,
             primary_prediction.confidence,
             secondary_prediction.get("confidence", 0.0),
             semantic_matches.get("top_score", 0.0),
@@ -438,12 +440,18 @@ class ThreatIntelligenceEngine:
             "platforms": list(platforms or [finding.get("source")]),
             "demo_mode": any(item.get("metadata", {}).get("demo") for item in finding.get("raw_items", [])),
             "confidence_score": round(float(confidence), 4),
+            "confidence_assessment": {
+                "score": int(round(float(confidence) * 100)),
+                "reasons": list(finding.get("confidence_reasons", [])),
+                "source_trust": float(finding.get("source_trust", 0.0) or 0.0),
+            },
             "patterns": regex_matches,
             "entities": all_entities,
             "enriched_entities": enriched_entities,
             "multilingual_analysis": multilingual_analysis,
             "slang_decoder": slang_decoder,
             "semantic_analysis": semantic_matches,
+            "event_signature": str(finding.get("event_signature") or ""),
             "primary_classification": {
                 "label": primary_prediction.label,
                 "confidence": round(primary_prediction.confidence, 4),
@@ -470,6 +478,10 @@ class ThreatIntelligenceEngine:
                 "matched_indicators": list(finding.get("matched_indicators", [])),
                 "source_locations": list(finding.get("source_locations", [])),
                 "summary": finding.get("summary"),
+                "event_signature": str(finding.get("event_signature") or ""),
+                "confidence_score": int(finding.get("confidence_score", 0) or 0),
+                "confidence_reasons": list(finding.get("confidence_reasons", [])),
+                "source_trust": float(finding.get("source_trust", 0.0) or 0.0),
                 "related_sources": [],
                 "demo_mode": any(item.get("metadata", {}).get("demo") for item in finding.get("raw_items", [])),
                 "raw_items": list(finding.get("raw_items", [])),
@@ -494,6 +506,8 @@ class ThreatIntelligenceEngine:
             result["explanation"].append(
                 f"Observed on: {', '.join(list(finding.get('source_locations', []))[:3])}."
             )
+        if finding.get("confidence_reasons"):
+            result["explanation"].extend(list(finding.get("confidence_reasons", []))[:4])
         if result["demo_mode"]:
             result["explanation"].append("Demo mode generated this synthetic finding for safe UI validation.")
 
@@ -765,6 +779,9 @@ class ThreatIntelligenceEngine:
         matched_indicators = list(external.get("matched_indicators", []))
         affected_assets = list(external.get("affected_assets", []))
         exposed_data_types = list(external.get("data_types", []))
+        confidence_reasons = list(external.get("confidence_reasons", [])) or list(
+            result.get("confidence_assessment", {}).get("reasons", [])
+        )
         recommended_actions = self._recommended_actions_for_case(
             threat_type=result.get("threat_type", "Unknown"),
             affected_assets=affected_assets,
@@ -773,22 +790,32 @@ class ThreatIntelligenceEngine:
         confidence_basis = [
             f"Priority score {result.get('alert_priority', {}).get('priority_score', 0)} from risk, impact, and correlation scoring.",
             f"Source {source_name} reported {external.get('estimated_records') or 'an undisclosed amount of'} exposure.",
+            *confidence_reasons[:4],
             *list(result.get("explanation", []))[:3],
         ]
         source_locations = list(external.get("source_locations", []))
-        summary = external.get("summary") or result.get("impact_assessment", {}).get("summary") or "Exposure detected."
-        fingerprint_parts = [
-            organization.lower(),
-            str(result.get("threat_type", "")).lower(),
-            "|".join(sorted(item.lower() for item in affected_assets[:4])),
-            "|".join(sorted(item.lower() for item in matched_indicators[:4])),
-        ]
-        fingerprint_key = "::".join(fingerprint_parts)
+        technical_summary = external.get("summary") or result.get("impact_assessment", {}).get("summary") or "Exposure detected."
+        exposure_summary = self._build_executive_case_summary(result, external)
+        leak_channel, leak_post_url = choose_primary_location(source_locations)
+        event_signature = str(
+            external.get("event_signature")
+            or result.get("event_signature")
+            or build_event_signature(
+                query=organization,
+                source=source_name,
+                title=str(result.get("threat_type", "")),
+                text=str(result.get("input_text", "")),
+                matched_indicators=matched_indicators,
+                source_locations=source_locations,
+                channel_hint=leak_channel or "",
+            )
+        )
+        fingerprint_key = event_signature
         case_title = f"{organization} exposure detected via {source_name}"
         event_timestamp = result.get("timestamp")
         first_seen = event_timestamp
 
-        evidence_id = f"{source_name.lower()}::{event_timestamp}::{fingerprint_key}"
+        evidence_id = f"{source_name.lower()}::{event_timestamp}::{event_signature}"
         source_entry = {
             "source": source_name,
             "first_seen": first_seen,
@@ -797,6 +824,7 @@ class ThreatIntelligenceEngine:
             "source_locations": source_locations,
             "risk_score": float(result.get("risk_score", 0.0) or 0.0),
             "confidence_score": float(result.get("confidence_score", 0.0) or 0.0),
+            "trust_score": float(external.get("source_trust", 0.0) or 0.0),
             "related_sources": list(external.get("related_sources", [])),
         }
 
@@ -806,19 +834,31 @@ class ThreatIntelligenceEngine:
         )
 
         case_payload = {
+            "event_signature": event_signature,
             "fingerprint_key": fingerprint_key,
+            "org_id": organization,
             "organization": organization,
             "query": query,
+            "category": result.get("threat_type", "Unknown"),
             "title": case_title,
-            "summary": summary,
-            "executive_summary": self._build_executive_case_summary(result, external),
+            "summary": technical_summary,
+            "technical_summary": technical_summary,
+            "exposure_summary": exposure_summary,
+            "executive_summary": exposure_summary,
             "case_status": "new",
+            "triage_status": "New",
             "owner": str((watchlist or {}).get("owner") or "Unassigned"),
+            "assigned_to": str((watchlist or {}).get("owner") or "Unassigned"),
             "business_unit": business_unit,
             "priority": result.get("alert_priority", {}).get("priority", "LOW"),
             "priority_score": int(result.get("alert_priority", {}).get("priority_score", 0) or 0),
             "risk_level": result.get("risk_level", "LOW"),
             "confidence_score": float(result.get("confidence_score", 0.0) or 0.0),
+            "confidence_assessment": {
+                "score": int(result.get("confidence_assessment", {}).get("score", 0) or 0),
+                "reasons": confidence_reasons,
+            },
+            "why_this_was_flagged": confidence_reasons,
             "threat_type": result.get("threat_type"),
             "severity_reason": self._severity_reason_for_case(result, external),
             "affected_assets": affected_assets,
@@ -829,16 +869,27 @@ class ThreatIntelligenceEngine:
             "recommended_actions": recommended_actions,
             "confidence_basis": confidence_basis,
             "watchlists": [str((watchlist or {}).get("name") or organization)],
+            "tags": self._dedupe_case_tags(result, external),
+            "leak_origin": {
+                "platform": source_name,
+                "channel_or_user": leak_channel,
+                "post_url": leak_post_url,
+            },
             "sources": [source_entry],
             "evidence": [
                 {
                     "evidence_id": evidence_id,
+                    "evidence_type": "link" if leak_post_url else "text",
                     "timestamp": event_timestamp,
                     "source": source_name,
-                    "summary": summary,
+                    "source_platform": source_name,
+                    "summary": technical_summary,
                     "source_locations": source_locations,
                     "matched_indicators": matched_indicators,
+                    "matched_entities": matched_indicators,
                     "data_breakdown": list(external.get("data_breakdown", [])),
+                    "cleaned_snippet": technical_summary,
+                    "raw_snippet": str(result.get("input_text", "") or "")[:800],
                     "raw_excerpt": str(result.get("input_text", "") or "")[:800],
                     "provenance": {
                         "query": query,
@@ -908,6 +959,26 @@ class ThreatIntelligenceEngine:
             f"{result.get('alert_priority', {}).get('priority', 'LOW')} due to {result.get('threat_type', 'detected exposure').lower()} "
             f"signals and the affected assets {', '.join(external.get('affected_assets', [])[:3]) or 'still being identified'}."
         )
+
+    @staticmethod
+    def _dedupe_case_tags(result: dict[str, Any], external: dict[str, Any]) -> list[str]:
+        values = [
+            str(result.get("threat_type") or "").strip(),
+            str(result.get("risk_level") or "").strip(),
+            str(external.get("source") or "").strip(),
+            *[str(item).strip() for item in external.get("data_types", [])],
+        ]
+        tags: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            tags.append(value)
+        return tags
 
     def simulate_alerts(self, count: int = 5) -> list[dict[str, Any]]:
         results = []

@@ -20,13 +20,13 @@ from utils.config import (
     INTELX_API_KEY,
     LEAKIX_API_KEY,
     PASTEBIN_API_KEY,
-    PLATFORM_REPUTATION_SCORES,
     PUBLIC_INTEL_MAX_ITEMS,
     PUBLIC_INTEL_REQUEST_TIMEOUT,
     TELEGRAM_API_HASH,
     TELEGRAM_API_ID,
     TELEGRAM_SESSION_STRING,
 )
+from utils.signal_quality import build_event_signature, score_confidence, should_promote_finding, source_trust_score
 
 
 EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -41,6 +41,7 @@ THREAT_SIGNAL_PATTERN = re.compile(
     r"(?i)\b(?:credential|credentials|password|combo|leak|breach|dump|database|phishing|otp|stealer|"
     r"malware|ransomware|account|access|admin|panel|logs|fullz|hash|cookies?)\b"
 )
+FILELIKE_TLDS = {"md", "txt", "csv", "json", "yaml", "yml", "py", "js", "jsx", "tsx", "html", "css", "svg"}
 
 
 class IntelligenceSourceError(RuntimeError):
@@ -75,6 +76,10 @@ class AggregatedFinding:
     matched_indicators: list[str]
     source_locations: list[str]
     summary: str
+    event_signature: str
+    confidence_score: int
+    confidence_reasons: list[str]
+    source_trust: float
     raw_items: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -721,7 +726,24 @@ class ExternalIntelligenceService:
                     )
                     continue
 
-                findings.append(self._aggregate_hits(normalized_query, client_name, hits))
+                finding = self._aggregate_hits(normalized_query, client_name, hits)
+                if not should_promote_finding(
+                    score_confidence(
+                        query=normalized_query,
+                        text=finding.text,
+                        source=finding.source,
+                        matched_indicators=finding.matched_indicators,
+                        data_types=finding.data_types,
+                        source_locations=finding.source_locations,
+                        evidence_count=finding.volume,
+                        metadata=finding.raw_items[0].get("metadata", {}) if finding.raw_items else {},
+                    )
+                ):
+                    warnings.append(
+                        f"{client_name} returned only low-confidence or likely-noise content for query {normalized_query}."
+                    )
+                    continue
+                findings.append(finding)
 
         platforms = [finding.source for finding in findings]
         for finding in findings:
@@ -899,6 +921,31 @@ class ExternalIntelligenceService:
         matched_indicators = self._extract_matched_indicators(emails, usernames, domains, ip_addresses)
         source_locations = self._extract_source_locations(source, hits)
         risk_score = self._calculate_risk_score(source, data_types, len(hits))
+        confidence = score_confidence(
+            query=organization,
+            text=combined_text,
+            source=source,
+            matched_indicators=matched_indicators,
+            data_types=data_types,
+            source_locations=source_locations,
+            evidence_count=len(hits),
+            metadata=hits[0].metadata if hits else {},
+        )
+        channel_hint = ""
+        if hits:
+            if hits[0].metadata.get("chat_id"):
+                channel_hint = f"channel:{hits[0].metadata.get('chat_id')}"
+            elif isinstance(hits[0].metadata.get("repository"), str):
+                channel_hint = str(hits[0].metadata.get("repository"))
+        event_signature = build_event_signature(
+            query=organization,
+            source=source,
+            title=breach_type,
+            text=combined_text,
+            matched_indicators=matched_indicators,
+            source_locations=source_locations,
+            channel_hint=channel_hint,
+        )
         dates = [hit.date_found for hit in hits if hit.date_found]
 
         return AggregatedFinding(
@@ -920,6 +967,10 @@ class ExternalIntelligenceService:
             matched_indicators=matched_indicators,
             source_locations=source_locations,
             summary=self._build_finding_summary(source, breach_type, data_types, estimated_records, affected_assets),
+            event_signature=event_signature,
+            confidence_score=confidence.score,
+            confidence_reasons=confidence.reasons,
+            source_trust=confidence.source_trust,
             raw_items=[
                 {
                     "text": hit.text,
@@ -941,21 +992,28 @@ class ExternalIntelligenceService:
         has_threat_signal = bool(THREAT_SIGNAL_PATTERN.search(haystack))
         has_sensitive_signal = bool(emails or usernames or PASSWORD_SIGNAL_PATTERN.search(haystack))
         search_type = str(hit.metadata.get("search_type", "")).lower()
+        likely_noise = "allowlist" in haystack or "tutorial" in haystack or "notes.md" in haystack or "readme" in haystack
 
         # Domain queries should match the exact domain or emails on that domain.
         if "." in normalized_query and " " not in normalized_query:
             exact_domain_match = normalized_query in {domain.lower() for domain in domains}
             email_domain_match = any(email.lower().endswith(f"@{normalized_query}") for email in emails)
-            github_code_match = hit.source == "GitHub" and search_type == "code" and exact_domain_match
+            github_code_match = hit.source == "GitHub" and search_type == "code" and (
+                email_domain_match or (exact_domain_match and has_sensitive_signal)
+            )
             intelx_match = hit.source == "IntelX" and normalized_query in haystack
             leakix_match = hit.source == "LeakIX" and normalized_query in haystack
-            return github_code_match or intelx_match or leakix_match or exact_domain_match or email_domain_match or (
-                normalized_query in haystack and has_threat_signal
+            if likely_noise and not email_domain_match and not (exact_domain_match and has_sensitive_signal):
+                return False
+            return github_code_match or intelx_match or leakix_match or (
+                (exact_domain_match or email_domain_match) and (has_threat_signal or has_sensitive_signal)
             )
 
         # Organization-name queries must mention the org and also contain threat/exposure signals.
         org_match = normalized_query in haystack
-        return org_match and (has_threat_signal or has_sensitive_signal)
+        if hit.source in {"Telegram", "Pastebin"}:
+            return org_match and has_threat_signal and has_sensitive_signal and not likely_noise
+        return org_match and has_threat_signal and has_sensitive_signal and not likely_noise
 
     @staticmethod
     def _extract_emails(hits: list[RawSourceHit]) -> list[str]:
@@ -987,7 +1045,7 @@ class ExternalIntelligenceService:
             results.extend(DOMAIN_PATTERN.findall(hit.text))
             for value in ExternalIntelligenceService._flatten_metadata_text(hit.metadata):
                 results.extend(DOMAIN_PATTERN.findall(value))
-        return results
+        return [domain for domain in results if ExternalIntelligenceService._is_valid_domain_candidate(domain)]
 
     @staticmethod
     def _extract_ip_addresses(hits: list[RawSourceHit]) -> list[str]:
@@ -1003,16 +1061,39 @@ class ExternalIntelligenceService:
         lowered = text.lower()
         metadata_blob = " ".join(str(hit.metadata) for hit in hits).lower()
         combined = f"{lowered} {metadata_blob}"
+        scores = {
+            "Credential Leak": 0,
+            "Database Dump": 0,
+            "Data Sale": 0,
+            "Pastebin Leak": 0,
+            "Phishing": 0,
+            "Malware Chatter": 0,
+            "Impersonation": 0,
+            "Token Leak": 0,
+        }
+        keyword_groups = {
+            "Credential Leak": ("hash", "password", "combo", "credential", "account", "login", "cookies"),
+            "Database Dump": ("dump", "database", "records", "breach", "leak", "dataset"),
+            "Data Sale": ("selling", "for sale", "price", "escrow", "marketplace"),
+            "Pastebin Leak": ("paste", "pastebin", "scrape", "raw paste"),
+            "Phishing": ("phishing", "otp", "harvest", "fake portal", "smishing"),
+            "Malware Chatter": ("stealer", "loader", "crypter", "malware", "ransomware", "botnet"),
+            "Impersonation": ("impersonat", "spoof", "brand clone", "lookalike", "fake login"),
+            "Token Leak": ("token", "jwt", "bearer", "api_key", "session secret", "webhook secret"),
+        }
+        for category, keywords in keyword_groups.items():
+            for keyword in keywords:
+                if keyword in combined:
+                    scores[category] += 3
+        if hits and hits[0].source == "Pastebin":
+            scores["Pastebin Leak"] += 2
+        if any("token" in str(hit.metadata).lower() for hit in hits):
+            scores["Token Leak"] += 3
 
-        if any(keyword in combined for keyword in ("hash", "password", "combo", "credential", "account", "login")):
+        best_label = max(scores, key=scores.get)
+        if scores[best_label] <= 0:
             return "Credential Leak"
-        if any(keyword in combined for keyword in ("dump", "database", "records", "breach", "leak")):
-            return "Database Dump"
-        if any(keyword in combined for keyword in ("phishing", "otp", "spoof", "fake portal")):
-            return "Phishing"
-        if any(keyword in combined for keyword in ("stealer", "loader", "crypter", "malware", "ransomware")):
-            return "Malware Sale"
-        return "Credential Leak"
+        return best_label
 
     @staticmethod
     def _detect_data_types(text: str, emails: list[str], usernames: list[str], hits: list[RawSourceHit]) -> list[str]:
@@ -1110,13 +1191,36 @@ class ExternalIntelligenceService:
 
     @staticmethod
     def _extract_affected_assets(organization: str, hits: list[RawSourceHit], domains: list[str]) -> list[str]:
-        assets = list(domains)
+        normalized_query = str(organization or "").strip().lower()
+        assets: list[str] = []
+        emails = ExternalIntelligenceService._extract_emails(hits)
+        usernames = ExternalIntelligenceService._extract_usernames(hits)
+        ip_addresses = ExternalIntelligenceService._extract_ip_addresses(hits)
+
+        for domain in domains:
+            if ExternalIntelligenceService._domain_matches_query(normalized_query, domain):
+                assets.append(domain)
+        for email in emails:
+            if "." in normalized_query and email.lower().endswith(f"@{normalized_query}"):
+                assets.append(email)
+        if "." in normalized_query and " " not in normalized_query:
+            for ip_address in ip_addresses:
+                assets.append(ip_address)
+        for username in usernames:
+            lowered = username.lower()
+            if normalized_query and normalized_query.replace(".", "-") in lowered:
+                assets.append(username)
+
         normalized_query = str(organization or "").strip().lower()
         for hit in hits:
-            for key in ("host", "repository", "name", "database_name", "event_source"):
+            for key in ("host", "domain", "event_source"):
                 value = hit.metadata.get(key)
                 if isinstance(value, str) and value.strip():
-                    assets.append(value.strip())
+                    cleaned = value.strip()
+                    if ExternalIntelligenceService._is_valid_domain_candidate(cleaned) and ExternalIntelligenceService._domain_matches_query(
+                        normalized_query, cleaned
+                    ):
+                        assets.append(cleaned)
         if normalized_query and "." in normalized_query and " " not in normalized_query:
             assets.append(normalized_query)
         return ExternalIntelligenceService._unique(assets)[:8]
@@ -1168,7 +1272,7 @@ class ExternalIntelligenceService:
 
     @staticmethod
     def _calculate_risk_score(source: str, data_types: list[str], volume: int) -> float:
-        platform_score = PLATFORM_REPUTATION_SCORES.get(source, 0.45)
+        platform_score = source_trust_score(source)
         sensitivity_score = max(DATA_SENSITIVITY_SCORES.get(data_type, 0.35) for data_type in data_types)
         volume_score = min(1.0, math.log1p(max(1, volume)) / math.log(12))
         risk_score = (platform_score * 0.4) + (sensitivity_score * 0.4) + (volume_score * 0.2)
@@ -1203,6 +1307,29 @@ class ExternalIntelligenceService:
             seen.add(lowered)
             results.append(normalized)
         return results
+
+    @staticmethod
+    def _is_valid_domain_candidate(value: str) -> bool:
+        normalized = str(value or "").strip().lower()
+        if not normalized or "." not in normalized or "@" in normalized:
+            return False
+        suffix = normalized.rsplit(".", 1)[-1]
+        if suffix in FILELIKE_TLDS:
+            return False
+        if "/" in normalized or normalized.startswith("http"):
+            return False
+        return True
+
+    @staticmethod
+    def _domain_matches_query(query: str, domain: str) -> bool:
+        normalized_query = str(query or "").strip().lower()
+        normalized_domain = str(domain or "").strip().lower()
+        if not normalized_query or not normalized_domain:
+            return False
+        if "." in normalized_query and " " not in normalized_query:
+            return normalized_domain == normalized_query or normalized_domain.endswith(f".{normalized_query}")
+        query_tokens = [token for token in re.split(r"[^a-z0-9]+", normalized_query) if token]
+        return any(token in normalized_domain for token in query_tokens if len(token) > 2)
 
     @staticmethod
     def _slugify(value: str) -> str:

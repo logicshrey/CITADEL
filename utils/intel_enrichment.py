@@ -6,6 +6,13 @@ from typing import Any
 
 
 DOMAIN_PATTERN = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b")
+GENERIC_CORRELATION_SIGNALS = {
+    "github.com",
+    "gmail.com",
+    "pastebin.com",
+    "telegram",
+    "unknown",
+}
 
 MULTILINGUAL_GLOSSARY = {
     "spanish": {
@@ -207,44 +214,71 @@ def estimate_impact(
 
 
 def correlate_alerts(candidate_result: dict[str, Any], recent_alerts: list[dict[str, Any]]) -> dict[str, Any]:
-    candidate_entities = {entity.get("text", "").lower() for entity in candidate_result.get("entities", []) if entity.get("text")}
+    candidate_signature = str(candidate_result.get("event_signature") or "").strip()
+    candidate_entities = {
+        entity.get("text", "").lower()
+        for entity in candidate_result.get("entities", [])
+        if entity.get("text") and entity.get("text", "").lower() not in GENERIC_CORRELATION_SIGNALS
+    }
     candidate_domains = {
         entity.get("text", "").lower()
         for entity in candidate_result.get("enriched_entities", [])
         if entity.get("label") in {"DOMAIN", "HANDLE", "EMAIL", "WALLET"}
+        and entity.get("text", "").lower() not in GENERIC_CORRELATION_SIGNALS
     }
     candidate_slang = {term["phrase"] for term in candidate_result.get("slang_decoder", {}).get("decoded_terms", [])}
     candidate_threat = candidate_result.get("threat_type")
+    candidate_locations = {
+        str(location).lower()
+        for location in candidate_result.get("external_intelligence", {}).get("source_locations", [])
+        if str(location).strip()
+    }
 
     matches = []
     recurring_signal_counter: Counter[str] = Counter()
 
     for alert in recent_alerts:
         result = alert.get("results", alert)
+        result_signature = str(result.get("event_signature") or "").strip()
         shared_entities = candidate_entities.intersection(
-            {entity.get("text", "").lower() for entity in result.get("entities", []) if entity.get("text")}
+            {
+                entity.get("text", "").lower()
+                for entity in result.get("entities", [])
+                if entity.get("text") and entity.get("text", "").lower() not in GENERIC_CORRELATION_SIGNALS
+            }
         )
         shared_domains = candidate_domains.intersection(
             {
                 entity.get("text", "").lower()
                 for entity in result.get("enriched_entities", [])
                 if entity.get("label") in {"DOMAIN", "HANDLE", "EMAIL", "WALLET"}
+                and entity.get("text", "").lower() not in GENERIC_CORRELATION_SIGNALS
             }
         )
         shared_slang = candidate_slang.intersection(
             {term["phrase"] for term in result.get("slang_decoder", {}).get("decoded_terms", [])}
         )
+        shared_locations = candidate_locations.intersection(
+            {
+                str(location).lower()
+                for location in result.get("external_intelligence", {}).get("source_locations", [])
+                if str(location).strip()
+            }
+        )
         same_threat = candidate_threat == result.get("threat_type")
 
         score = 0
+        if candidate_signature and result_signature and candidate_signature == result_signature:
+            score += 50
         if same_threat:
             score += 15
-        score += len(shared_entities) * 14
-        score += len(shared_domains) * 12
+        score += len(shared_entities) * 16
+        score += len(shared_domains) * 14
         score += len(shared_slang) * 9
+        score += len(shared_locations) * 18
 
-        shared_signals = sorted(shared_entities.union(shared_domains).union(shared_slang))
-        if score >= 20 and shared_signals:
+        shared_signals = sorted(shared_entities.union(shared_domains).union(shared_slang).union(shared_locations))
+        if score >= 28 and shared_signals:
             matches.append(
                 {
                     "threat_type": result.get("threat_type"),

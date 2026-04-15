@@ -8,6 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from utils.case_schema import flatten_affected_assets, normalize_case_list, normalize_case_record
+from utils.signal_quality import token_similarity
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -39,6 +42,38 @@ def _dedupe_strings(values: list[Any]) -> list[str]:
     return results
 
 
+def _case_source_locations(case: dict[str, Any]) -> set[str]:
+    locations: set[str] = set()
+    for source in case.get("sources", []):
+        for location in source.get("source_locations", []):
+            normalized = str(location or "").strip().lower()
+            if normalized:
+                locations.add(normalized)
+    leak_origin = case.get("leak_origin", {}) if isinstance(case.get("leak_origin"), dict) else {}
+    for key in ("channel_or_user", "post_url"):
+        normalized = str(leak_origin.get(key) or "").strip().lower()
+        if normalized:
+            locations.add(normalized)
+    return locations
+
+
+def _case_event_time(case: dict[str, Any]) -> datetime | None:
+    return _parse_iso(case.get("last_seen")) or _parse_iso(case.get("first_seen"))
+
+
+def _case_snippet(case: dict[str, Any]) -> str:
+    evidence = case.get("evidence", [])
+    if evidence and isinstance(evidence[0], dict):
+        return str(
+            evidence[0].get("cleaned_snippet")
+            or evidence[0].get("raw_snippet")
+            or evidence[0].get("raw_excerpt")
+            or evidence[0].get("summary")
+            or ""
+        )
+    return str(case.get("summary") or case.get("technical_summary") or case.get("exposure_summary") or "")
+
+
 class LocalMonitoringStore:
     """Durable fallback storage for alerts, cases, watchlists, and audit events."""
 
@@ -66,7 +101,13 @@ class LocalMonitoringStore:
             self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")
             return state
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+            state.setdefault("alerts", [])
+            state["cases"] = normalize_case_list(state.get("cases", []))
+            state.setdefault("watchlists", [])
+            state.setdefault("audit_events", [])
+            state.setdefault("scheduler", {"last_tick_at": None, "last_cycle_summary": None})
+            return state
         except Exception:
             state = self._default_state()
             self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -112,11 +153,12 @@ class LocalMonitoringStore:
             needle = search.lower()
             filtered: list[dict[str, Any]] = []
             for case in cases:
+                asset_values = flatten_affected_assets(case.get("affected_assets")) or case.get("affected_assets_flat", [])
                 haystack = " ".join(
                     [
                         str(case.get("title", "")),
-                        str(case.get("summary", "")),
-                        " ".join(case.get("affected_assets", [])),
+                        str(case.get("summary", "") or case.get("technical_summary", "") or case.get("exposure_summary", "")),
+                        " ".join(asset_values),
                         " ".join(case.get("matched_indicators", [])),
                         " ".join(source.get("source", "") for source in case.get("sources", [])),
                     ]
@@ -131,81 +173,143 @@ class LocalMonitoringStore:
     def get_case(self, case_id: str) -> dict[str, Any] | None:
         with self._lock:
             for case in self._state["cases"]:
-                if case.get("id") == case_id:
-                    return dict(case)
+                if case.get("id") == case_id or case.get("case_id") == case_id:
+                    return normalize_case_record(case)
         return None
 
     def save_case(self, candidate: dict[str, Any]) -> tuple[dict[str, Any], str]:
         with self._lock:
-            match_index = self._find_matching_case(candidate)
+            normalized_candidate = normalize_case_record(candidate)
+            match_index = self._find_matching_case(normalized_candidate)
             now_iso = _now_iso()
 
             if match_index is None:
-                case = dict(candidate)
+                case = dict(normalized_candidate)
                 case["id"] = self._new_id("case")
+                case["case_id"] = case["id"]
                 case.setdefault("created_at", now_iso)
-                case.setdefault("first_seen", candidate.get("last_seen", now_iso))
+                case.setdefault("updated_at", now_iso)
+                case.setdefault("first_seen", normalized_candidate.get("last_seen", now_iso))
                 case.setdefault("last_seen", now_iso)
                 case.setdefault("timeline", [])
                 case.setdefault("watchlists", [])
                 case.setdefault("sources", [])
                 case.setdefault("evidence", [])
                 case.setdefault("recommended_actions", [])
+                case.setdefault("suggested_remediation_steps", case.get("recommended_actions", []))
+                case.setdefault("affected_assets_flat", flatten_affected_assets(case.get("affected_assets")))
                 case.setdefault("confidence_basis", [])
                 case["source_count"] = len(case.get("sources", []))
                 case["evidence_count"] = len(case.get("evidence", []))
                 case["corroborating_source_count"] = max(0, case["source_count"] - 1)
+                case = normalize_case_record(case)
                 self._state["cases"].append(case)
                 self._save()
-                return dict(case), "created"
+                return normalize_case_record(case), "created"
 
             existing = self._state["cases"][match_index]
-            existing["summary"] = candidate.get("summary", existing.get("summary"))
-            existing["executive_summary"] = candidate.get("executive_summary", existing.get("executive_summary"))
-            existing["priority_score"] = max(int(existing.get("priority_score", 0)), int(candidate.get("priority_score", 0)))
-            existing["priority"] = candidate.get("priority") if int(candidate.get("priority_score", 0)) >= int(existing.get("priority_score", 0)) else existing.get("priority")
-            existing["risk_level"] = candidate.get("risk_level", existing.get("risk_level"))
-            existing["severity_reason"] = candidate.get("severity_reason", existing.get("severity_reason"))
-            existing["business_unit"] = candidate.get("business_unit", existing.get("business_unit"))
-            existing["owner"] = existing.get("owner") or candidate.get("owner") or "Unassigned"
-            existing["last_seen"] = max(existing.get("last_seen", ""), candidate.get("last_seen", ""))
-            existing["first_seen"] = min(
-                value for value in [existing.get("first_seen"), candidate.get("first_seen")] if isinstance(value, str) and value
+            existing["summary"] = normalized_candidate.get("summary", existing.get("summary"))
+            existing["technical_summary"] = normalized_candidate.get("technical_summary", existing.get("technical_summary"))
+            existing["exposure_summary"] = normalized_candidate.get("exposure_summary", existing.get("exposure_summary"))
+            existing["executive_summary"] = normalized_candidate.get("executive_summary", existing.get("executive_summary"))
+            existing["priority_score"] = max(int(existing.get("priority_score", 0)), int(normalized_candidate.get("priority_score", 0)))
+            existing["priority"] = (
+                normalized_candidate.get("priority")
+                if int(normalized_candidate.get("priority_score", 0)) >= int(existing.get("priority_score", 0))
+                else existing.get("priority")
             )
-            existing["affected_assets"] = _dedupe_strings([*existing.get("affected_assets", []), *candidate.get("affected_assets", [])])
-            existing["matched_indicators"] = _dedupe_strings([*existing.get("matched_indicators", []), *candidate.get("matched_indicators", [])])
-            existing["exposed_data_types"] = _dedupe_strings([*existing.get("exposed_data_types", []), *candidate.get("exposed_data_types", [])])
-            existing["watchlists"] = _dedupe_strings([*existing.get("watchlists", []), *candidate.get("watchlists", [])])
+            existing["severity"] = normalized_candidate.get("severity", existing.get("severity"))
+            existing["risk_level"] = normalized_candidate.get("risk_level", existing.get("risk_level"))
+            existing["risk_score"] = max(float(existing.get("risk_score", 0) or 0), float(normalized_candidate.get("risk_score", 0) or 0))
+            existing["confidence_score"] = max(
+                int(existing.get("confidence_score", 0) or 0),
+                int(normalized_candidate.get("confidence_score", 0) or 0),
+            )
+            existing["severity_reason"] = normalized_candidate.get("severity_reason", existing.get("severity_reason"))
+            existing["business_unit"] = normalized_candidate.get("business_unit", existing.get("business_unit"))
+            existing["owner"] = existing.get("owner") or normalized_candidate.get("owner") or "Unassigned"
+            existing["assigned_to"] = existing.get("assigned_to") or normalized_candidate.get("assigned_to") or existing["owner"]
+            existing["last_seen"] = max(existing.get("last_seen", ""), normalized_candidate.get("last_seen", ""))
+            existing["first_seen"] = min(
+                value
+                for value in [existing.get("first_seen"), normalized_candidate.get("first_seen")]
+                if isinstance(value, str) and value
+            )
+            existing["affected_assets_flat"] = _dedupe_strings(
+                [
+                    *flatten_affected_assets(existing.get("affected_assets")),
+                    *existing.get("affected_assets_flat", []),
+                    *flatten_affected_assets(normalized_candidate.get("affected_assets")),
+                    *normalized_candidate.get("affected_assets_flat", []),
+                ]
+            )
+            existing["affected_assets"] = normalize_case_record(
+                {
+                    "id": existing.get("id"),
+                    "affected_assets": existing["affected_assets_flat"],
+                    "matched_indicators": _dedupe_strings(
+                        [*existing.get("matched_indicators", []), *normalized_candidate.get("matched_indicators", [])]
+                    ),
+                    "evidence": self._merge_evidence(existing.get("evidence", []), normalized_candidate.get("evidence", [])),
+                }
+            )["affected_assets"]
+            existing["matched_indicators"] = _dedupe_strings(
+                [*existing.get("matched_indicators", []), *normalized_candidate.get("matched_indicators", [])]
+            )
+            existing["exposed_data_types"] = _dedupe_strings(
+                [*existing.get("exposed_data_types", []), *normalized_candidate.get("exposed_data_types", [])]
+            )
+            existing["watchlists"] = _dedupe_strings([*existing.get("watchlists", []), *normalized_candidate.get("watchlists", [])])
+            existing["tags"] = _dedupe_strings([*existing.get("tags", []), *normalized_candidate.get("tags", [])])
             existing["recommended_actions"] = _dedupe_strings(
-                [*existing.get("recommended_actions", []), *candidate.get("recommended_actions", [])]
+                [*existing.get("recommended_actions", []), *normalized_candidate.get("recommended_actions", [])]
+            )
+            existing["suggested_remediation_steps"] = _dedupe_strings(
+                [*existing.get("suggested_remediation_steps", []), *normalized_candidate.get("suggested_remediation_steps", [])]
             )
             existing["confidence_basis"] = _dedupe_strings(
-                [*existing.get("confidence_basis", []), *candidate.get("confidence_basis", [])]
+                [*existing.get("confidence_basis", []), *normalized_candidate.get("confidence_basis", [])]
             )
-            existing["evidence"] = self._merge_evidence(existing.get("evidence", []), candidate.get("evidence", []))
-            existing["sources"] = self._merge_sources(existing.get("sources", []), candidate.get("sources", []))
-            existing["timeline"] = self._merge_timeline(existing.get("timeline", []), candidate.get("timeline", []))
+            existing["why_this_was_flagged"] = _dedupe_strings(
+                [*existing.get("why_this_was_flagged", []), *normalized_candidate.get("why_this_was_flagged", [])]
+            )
+            existing["evidence"] = self._merge_evidence(existing.get("evidence", []), normalized_candidate.get("evidence", []))
+            existing["sources"] = self._merge_sources(existing.get("sources", []), normalized_candidate.get("sources", []))
+            existing["timeline"] = self._merge_timeline(existing.get("timeline", []), normalized_candidate.get("timeline", []))
             existing["estimated_total_records"] = self._max_optional_int(
-                existing.get("estimated_total_records"), candidate.get("estimated_total_records")
+                existing.get("estimated_total_records"), normalized_candidate.get("estimated_total_records")
             )
-            existing["estimated_total_records_label"] = candidate.get(
+            existing["estimated_total_records_label"] = normalized_candidate.get(
                 "estimated_total_records_label", existing.get("estimated_total_records_label")
             )
+            existing["event_signature"] = normalized_candidate.get("event_signature") or existing.get("event_signature") or existing.get("fingerprint_key")
+            existing["fingerprint_key"] = normalized_candidate.get("fingerprint_key") or existing.get("fingerprint_key")
+            existing["leak_origin"] = normalized_candidate.get("leak_origin", existing.get("leak_origin"))
+            existing["category"] = normalized_candidate.get("category", existing.get("category"))
+            existing["triage_status"] = existing.get("triage_status") or normalized_candidate.get("triage_status")
             existing["source_count"] = len(existing.get("sources", []))
             existing["evidence_count"] = len(existing.get("evidence", []))
             existing["corroborating_source_count"] = max(0, existing["source_count"] - 1)
             existing["updated_at"] = now_iso
+            existing = normalize_case_record(existing)
+            self._state["cases"][match_index] = existing
             self._save()
-            return dict(existing), "updated"
+            return normalize_case_record(existing), "updated"
 
     def update_case(self, case_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for case in self._state["cases"]:
-                if case.get("id") != case_id:
+            for index, case in enumerate(self._state["cases"]):
+                if case.get("id") != case_id and case.get("case_id") != case_id:
                     continue
                 for key in ("case_status", "owner", "business_unit"):
                     if key in updates and updates[key] is not None:
                         case[key] = updates[key]
+                if "case_status" in updates and updates["case_status"] is not None:
+                    case["triage_status"] = normalize_case_record({"id": case.get("id"), "case_status": updates["case_status"]})[
+                        "triage_status"
+                    ]
+                if "owner" in updates and updates["owner"] is not None:
+                    case["assigned_to"] = updates["owner"]
                 if updates.get("comment"):
                     case.setdefault("timeline", []).append(
                         {
@@ -215,8 +319,10 @@ class LocalMonitoringStore:
                         }
                     )
                 case["updated_at"] = _now_iso()
+                case = normalize_case_record(case)
+                self._state["cases"][index] = case
                 self._save()
-                return dict(case)
+                return case
         return None
 
     def list_watchlists(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
@@ -332,7 +438,7 @@ class LocalMonitoringStore:
         with self._lock:
             return {
                 "generated_at": _now_iso(),
-                "cases": list(self._state["cases"]),
+                "cases": normalize_case_list(list(self._state["cases"])),
                 "watchlists": list(self._state["watchlists"]),
                 "audit_events": list(self._state["audit_events"][-100:]),
                 "scheduler": dict(self._state["scheduler"]),
@@ -345,7 +451,10 @@ class LocalMonitoringStore:
             scheduler = dict(self._state["scheduler"])
 
         priority_counter = Counter()
+        severity_counter = Counter()
         status_counter = Counter()
+        category_counter = Counter()
+        confidence_counter = Counter()
         source_counter = Counter()
         asset_counter = Counter()
         data_counter = Counter()
@@ -359,7 +468,18 @@ class LocalMonitoringStore:
 
         for case in cases:
             priority_counter[case.get("priority", "LOW")] += 1
+            severity_counter[case.get("severity", "Low")] += 1
             status_counter[case.get("case_status", "new")] += 1
+            category_counter[case.get("category", "Unknown")] += 1
+            confidence_score = int(case.get("confidence_score", 0) or 0)
+            if confidence_score >= 80:
+                confidence_counter["80-100"] += 1
+            elif confidence_score >= 60:
+                confidence_counter["60-79"] += 1
+            elif confidence_score >= 40:
+                confidence_counter["40-59"] += 1
+            else:
+                confidence_counter["0-39"] += 1
             if int(case.get("priority_score", 0)) >= 85:
                 critical_cases += 1
             if int(case.get("corroborating_source_count", 0)) > 0:
@@ -374,7 +494,7 @@ class LocalMonitoringStore:
                 open_review_durations.append((now - first_seen).total_seconds() / 3600)
             for source in case.get("sources", []):
                 source_counter[source.get("source", "Unknown")] += 1
-            for asset in case.get("affected_assets", []):
+            for asset in flatten_affected_assets(case.get("affected_assets")) or case.get("affected_assets_flat", []):
                 asset_counter[asset] += 1
             for data_type in case.get("exposed_data_types", []):
                 data_counter[data_type] += 1
@@ -409,7 +529,10 @@ class LocalMonitoringStore:
             "enabled_watchlists": sum(1 for item in watchlists if item.get("enabled", True)),
             "new_cases_24h": new_cases_24h,
             "priority_distribution": dict(priority_counter),
+            "severity_distribution": dict(severity_counter),
             "status_distribution": dict(status_counter),
+            "category_distribution": dict(category_counter),
+            "confidence_distribution": dict(confidence_counter),
             "source_distribution": dict(source_counter),
             "asset_distribution": dict(asset_counter.most_common(10)),
             "exposure_distribution": dict(data_counter.most_common(10)),
@@ -423,7 +546,11 @@ class LocalMonitoringStore:
         }
 
     def _find_matching_case(self, candidate: dict[str, Any]) -> int | None:
+        candidate_locations = _case_source_locations(candidate)
+        candidate_time = _case_event_time(candidate)
         for index, case in enumerate(self._state["cases"]):
+            if case.get("event_signature") and case.get("event_signature") == candidate.get("event_signature"):
+                return index
             if case.get("fingerprint_key") and case.get("fingerprint_key") == candidate.get("fingerprint_key"):
                 return index
 
@@ -432,9 +559,25 @@ class LocalMonitoringStore:
             if case.get("threat_type") != candidate.get("threat_type"):
                 continue
 
-            shared_assets = set(case.get("affected_assets", [])).intersection(candidate.get("affected_assets", []))
+            shared_assets = set(flatten_affected_assets(case.get("affected_assets")) or case.get("affected_assets_flat", [])).intersection(
+                flatten_affected_assets(candidate.get("affected_assets")) or candidate.get("affected_assets_flat", [])
+            )
             shared_indicators = set(case.get("matched_indicators", [])).intersection(candidate.get("matched_indicators", []))
-            if shared_assets or shared_indicators:
+            shared_locations = _case_source_locations(case).intersection(candidate_locations)
+            case_time = _case_event_time(case)
+            close_in_time = False
+            if candidate_time and case_time:
+                close_in_time = abs((candidate_time - case_time).total_seconds()) <= 72 * 3600
+            snippet_similarity = token_similarity(_case_snippet(case), _case_snippet(candidate))
+
+            if shared_locations and close_in_time:
+                return index
+            if close_in_time and (
+                len(shared_assets) >= 2
+                or len(shared_indicators) >= 2
+                or (shared_assets and shared_indicators)
+                or snippet_similarity >= 0.78
+            ):
                 return index
 
         return None
@@ -466,6 +609,7 @@ class LocalMonitoringStore:
             current["source_locations"] = _dedupe_strings(
                 [*current.get("source_locations", []), *item.get("source_locations", [])]
             )
+            current["trust_score"] = max(float(current.get("trust_score", 0) or 0), float(item.get("trust_score", 0) or 0))
             current["related_sources"] = item.get("related_sources", current.get("related_sources", []))
         return list(merged.values())
 
