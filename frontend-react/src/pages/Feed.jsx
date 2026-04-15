@@ -21,6 +21,18 @@ import {
   updateWatchlist,
 } from '../services/api'
 
+function flattenAssets(assets) {
+  if (Array.isArray(assets)) {
+    return assets
+  }
+
+  if (!assets || typeof assets !== 'object') {
+    return []
+  }
+
+  return Object.values(assets).flat().filter(Boolean)
+}
+
 function Feed() {
   const [stats, setStats] = useState(null)
   const [cases, setCases] = useState([])
@@ -338,22 +350,25 @@ function Feed() {
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div>
                         <p className="text-lg font-semibold text-white">{caseItem.title}</p>
-                        <p className="mt-2 text-sm text-slate-300">{caseItem.summary}</p>
+                        <p className="mt-2 text-sm text-slate-300">{caseItem.exposure_summary || caseItem.executive_summary || caseItem.summary}</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <RiskBadge level={caseItem.risk_level || 'LOW'} />
                         <div className="terminal-text rounded-full border border-[#00E5FF]/20 bg-[#00E5FF]/10 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-[#A8F3FF]">
-                          {caseItem.priority}
+                          {caseItem.severity || caseItem.priority}
                         </div>
                         <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
-                          {caseItem.case_status}
+                          Confidence {caseItem.confidence_score || 0}
+                        </div>
+                        <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
+                          {caseItem.triage_status || caseItem.case_status}
                         </div>
                       </div>
                     </div>
                     <div className="mt-4 grid gap-3 md:grid-cols-3">
                       <div>
                         <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Assets</p>
-                        <p className="mt-1 text-sm text-slate-200">{caseItem.affected_assets?.slice(0, 3).join(', ') || 'Unknown assets'}</p>
+                        <p className="mt-1 text-sm text-slate-200">{flattenAssets(caseItem.affected_assets).slice(0, 3).join(', ') || 'Unknown assets'}</p>
                       </div>
                       <div>
                         <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Exposure</p>

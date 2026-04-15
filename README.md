@@ -1,49 +1,86 @@
-# Dark Web Threat Intelligence System
+# CITADEL
 
-AI-powered threat intelligence platform that detects credential leaks, malware sales, phishing, database dumps, and suspicious activity from dark web-style text.
+CITADEL is a dark web threat and exposure intelligence platform built around a FastAPI backend and a React/Vite frontend. It ingests live-source findings, normalizes and enriches them, filters noise, consolidates related evidence into exposure cases, streams updates in real time, and now exports executive-grade PDF intelligence reports.
 
-## Tech Stack
+## Stack
 
-- AI/ML: `spaCy (en_core_web_sm)`, `Sentence-BERT (all-MiniLM-L6-v2)`, `Scikit-learn (TF-IDF + Logistic Regression)`, `HuggingFace Transformers (DistilBERT)`, `regex`
-- Backend: `FastAPI`
-- Frontend: `Streamlit`
-- Database: `MongoDB (pymongo)`
-- Visualization: `Plotly`
-- Data handling: `Pandas`, `NumPy`
+- Backend: `FastAPI`, `Pydantic`, `requests`, `reportlab`
+- Frontend: `React`, `Vite`, `Recharts`, `Axios`, `Framer Motion`
+- Intelligence: `regex`, `spaCy`, `Sentence-BERT`, `scikit-learn`, optional `transformers`
+- Persistence: local JSON monitoring store plus optional MongoDB alert storage
+- Real-time updates: server-sent events via `/events/stream`
 
-## Features
+## Active Applications
 
-- Dataset detection from `data/spam.csv` and `data/cyber.csv`
-- Synthetic threat text generation when source data is missing or needs augmentation
-- Structured Android malware rows converted into readable threat text
-- Class balancing through oversampling
-- Auto-generated `data/raw_data.csv` and `data/processed_data.csv`
-- Regex-based IOC and leak pattern detection
-- NER for `ORG`, `PERSON`, and `GPE`
-- Semantic similarity against curated threat templates using SBERT with a safe fallback
-- Primary text classifier using TF-IDF + Logistic Regression
-- Secondary classifier using DistilBERT when the transformers stack is available
-- Risk scoring, explainable AI output, organization tracking, and alert persistence
-- Public-source intelligence collection for Telegram, Pastebin, and Dehashed with normalized JSON output
-- FastAPI endpoints for analysis, alerts, and statistics
-- Streamlit dashboard with four pages and Plotly analytics
+- `backend/`: active FastAPI backend
+- `frontend-react/`: active React/Vite frontend
+- `frontend/`: legacy Streamlit interface kept in the repository, but not the primary UI
 
-## Project Structure
+## What Changed In This Upgrade
+
+- Added strict case and evidence normalization with backward compatibility for legacy stored cases
+- Added a modular signal-quality layer for:
+  - source trust weighting
+  - confidence scoring with reasons
+  - event signatures for deduplication
+  - noise keyword suppression and spam-aware filtering
+- Reduced case fragmentation by tightening merge logic and correlation rules
+- Upgraded case payloads to support:
+  - structured impacted assets
+  - executive summary and technical summary
+  - why-this-was-flagged reasoning
+  - leak origin metadata
+  - cleaner evidence snippets
+- Added PDF report export via `/export/report/pdf`
+- Updated the React executive dashboard to export filtered PDF reports
+- Updated the React monitoring workspace to show structured case summaries, confidence, severity, and evidence previews
+
+## Core Architecture
+
+### Backend Flow
 
 ```text
-project/
-├── data/
-│   ├── spam.csv
-│   ├── cyber.csv
-│   ├── raw_data.csv
-│   └── processed_data.csv
-├── models/
-├── backend/
-├── frontend/
-├── utils/
-├── requirements.txt
-└── README.md
+Source collectors / manual analysis
+  -> normalization + cleaning
+  -> regex / NLP / entity enrichment
+  -> signal quality scoring
+  -> correlation + prioritization
+  -> structured exposure case creation
+  -> local monitoring store
+  -> SSE updates to the React UI
 ```
+
+### Main Backend Files
+
+- `backend/main.py`: FastAPI app, routes, SSE endpoint
+- `utils/nlp_engine.py`: orchestration, analysis, case building
+- `utils/source_intel_service.py`: public-source collection and source aggregation
+- `utils/signal_quality.py`: noise suppression, confidence scoring, event signatures
+- `utils/case_schema.py`: strict case/evidence/report models and compatibility normalization
+- `utils/local_store.py`: local JSON persistence for cases, watchlists, audit, scheduler state
+- `utils/reporting.py`: PDF report generation
+- `utils/monitoring_runtime.py`: watchlist scheduler and event bus
+
+## Monitoring Data Model
+
+Cases are normalized into a canonical structure that includes:
+
+- `case_id`
+- `org_id`
+- `category`
+- `severity`
+- `confidence_score`
+- `risk_score`
+- `affected_assets`
+- `evidence`
+- `leak_origin`
+- `exposure_summary`
+- `technical_summary`
+- `recommended_actions`
+- `why_this_was_flagged`
+- `triage_status`
+
+Legacy fields such as `title`, `summary`, `executive_summary`, `priority`, and `case_status` remain available for backward compatibility.
 
 ## Setup
 
@@ -54,23 +91,18 @@ project/
 pip install -r requirements.txt
 ```
 
-3. Install the spaCy English model:
+3. Install the spaCy model:
 
 ```bash
 python -m spacy download en_core_web_sm
 ```
 
-4. Make sure MongoDB is running if you want persistent storage.
-5. Create a `.env` file from `.env.example` and set your MongoDB values.
+4. Create a `.env` file and configure the providers you want to use.
 
-```bash
-copy .env.example .env
-```
-
-Example `.env`:
+Example environment values:
 
 ```env
-MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/?retryWrites=true&w=majority&appName=<app-name>
+MONGO_URI=mongodb://localhost:27017
 MONGO_DB_NAME=dark_web_threat_intel
 MONGO_COLLECTION=analyses
 TELEGRAM_API_ID=<telegram_api_id>
@@ -88,84 +120,72 @@ LEAKIX_API_KEY=<leakix_api_key>
 ## Run The Backend
 
 ```bash
-uvicorn backend.main:app --host 0.0.0.0 --port 8000
+uvicorn backend.main:app --host 0.0.0.0 --port 8001
 ```
 
-Available endpoints:
+## Run The React Frontend
+
+```bash
+cd frontend-react
+npm install
+npm run dev
+```
+
+## Main API Endpoints
 
 - `POST /analyze`
 - `POST /collect-intel`
 - `GET /alerts`
 - `GET /stats`
+- `GET /monitoring/stats`
+- `GET /cases`
+- `GET /cases/{case_id}`
+- `PATCH /cases/{case_id}`
+- `GET /cases/export`
+- `GET /export/report/pdf`
+- `GET /watchlists`
+- `POST /watchlists`
+- `PUT /watchlists/{watchlist_id}`
+- `DELETE /watchlists/{watchlist_id}`
+- `POST /watchlists/{watchlist_id}/run`
+- `GET /audit-events`
+- `GET /events/stream`
 
-## Run The Frontend
+## PDF Report Export
 
-```bash
-streamlit run frontend/app.py
-```
-
-The UI includes:
-
-- `Analyze Text`
-- `Upload Dataset`
-- `Alerts Dashboard`
-- `Analytics`
-
-## Example API Request
-
-```bash
-curl -X POST "http://127.0.0.1:8000/analyze" \
-  -H "Content-Type: application/json" \
-  -d "{\"text\": \"Admin login credentials for SBI with email ops@sbi.com password=Root@123\"}"
-```
+The PDF reporting endpoint supports executive-friendly filtered exports:
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/collect-intel" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\": \"example.com\", \"persist\": true}"
+curl -L "http://127.0.0.1:8001/export/report/pdf?severity=Critical&category=Credential%20Leak"
 ```
 
-## Example Inputs
+Supported filters:
 
-- `Selling Netflix combo accounts with email and password access`
-- `Phishing page ready for Microsoft 365 with OTP relay`
-- `Database dump available from ecommerce panel`
-- `Ransomware toolkit for sale with crypter service`
-- `Normal harmless discussion about patching mobile applications`
+- `start_date`
+- `end_date`
+- `severity`
+- `category`
+- `org_id`
 
-## Data Pipeline Rules
+The generated PDF includes:
 
-- `spam.csv` is loaded from `v1` and `v2`, then mapped to:
-  - `spam -> Phishing`
-  - `ham -> Normal`
-- `cyber.csv` is treated as structured Android permission data.
-- Malware rows are converted into descriptive text before modeling.
-- Malware labels are mapped to:
-  - `1 -> Malware Sale`
-  - `0 -> Normal`
-- Synthetic data adds realistic samples for:
-  - `Credential Leak`
-  - `Malware Sale`
-  - `Phishing`
-  - `Database Dump`
-  - `Normal`
+- cover page
+- executive summary
+- severity and confidence overview
+- detailed case sections
+- appendix with entities and source listings
 
-## Model Behavior
+## Running Tests
 
-- If `data/processed_data.csv` is missing, the pipeline rebuilds it automatically.
-- If the primary model is missing, it trains automatically at startup.
-- If MongoDB is unavailable, the app continues without crashing and uses in-memory fallback storage.
-- If optional NLP or transformers dependencies are unavailable, the system falls back safely while keeping the workflow operational.
+Targeted regression tests are provided for signal quality, case consolidation, correlation, and PDF generation:
+
+```bash
+python -m unittest discover -s tests
+```
 
 ## Notes
 
-- The primary classifier is fully validated and saved under `models/`.
-- The DistilBERT path is implemented as an optional secondary classifier and activates when the transformers stack is installed.
-- Alerts include threat type, detected patterns, entities, risk level, and timestamps.
-- Secrets such as MongoDB Atlas URIs and intelligence-provider credentials should be stored in `.env`, not hardcoded in source files.
-- Telegram collection uses Telethon and requires a valid authenticated string session.
-- Dehashed requests require both the account email and API key because the API uses authenticated requests.
-- Pastebin collection only uses public data and may require access approvals for their scraping interface.
-- GitHub collection uses a personal access token for higher-rate public search access across code and issue results.
-- IntelX collection uses the assigned Search API instance and API key from your IntelX developer dashboard.
-- LeakIX collection uses the free API key in the `api-key` header and is rate-limited to about one request per second.
+- If MongoDB is unavailable, CITADEL continues to function using the local monitoring store.
+- The watchlist scheduler and SSE flow remain backward compatible with the existing React monitoring workspace.
+- Report generation uses `reportlab`, which is included in `requirements.txt`.
+- The repository still contains a legacy Streamlit app, but the active UI for this system is `frontend-react/`.

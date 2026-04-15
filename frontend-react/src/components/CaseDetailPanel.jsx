@@ -8,6 +8,18 @@ function formatList(values, fallback = 'None detected') {
   return values.join(', ')
 }
 
+function flattenAssets(assets) {
+  if (Array.isArray(assets)) {
+    return assets
+  }
+
+  if (!assets || typeof assets !== 'object') {
+    return []
+  }
+
+  return Object.values(assets).flat().filter(Boolean)
+}
+
 function CaseDetailPanel({ selectedCase, onSave }) {
   const [caseStatus, setCaseStatus] = useState('new')
   const [owner, setOwner] = useState('Unassigned')
@@ -48,21 +60,38 @@ function CaseDetailPanel({ selectedCase, onSave }) {
     }
   }
 
+  const assetSections = [
+    ['Domains', selectedCase.affected_assets?.domains],
+    ['Emails', selectedCase.affected_assets?.emails],
+    ['IPs', selectedCase.affected_assets?.ips],
+    ['Usernames', selectedCase.affected_assets?.usernames],
+    ['Tokens', selectedCase.affected_assets?.tokens],
+    ['Wallets', selectedCase.affected_assets?.wallets],
+  ]
+  const evidenceItems = selectedCase.evidence || []
+
   return (
     <div className="glass-card neon-panel rounded-[32px] p-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-[#00E5FF]">Case Detail</p>
           <h3 className="mt-2 text-2xl font-semibold text-white">{selectedCase.title}</h3>
-          <p className="mt-3 text-sm text-slate-300">{selectedCase.executive_summary || selectedCase.summary}</p>
+          <p className="mt-3 text-sm text-slate-300">{selectedCase.exposure_summary || selectedCase.executive_summary || selectedCase.summary}</p>
+          <p className="mt-3 text-sm text-slate-400">{selectedCase.technical_summary || selectedCase.summary}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <RiskBadge level={selectedCase.risk_level || 'LOW'} />
+          <div className="terminal-text rounded-full border border-[#FF3B3B]/20 bg-[#FF3B3B]/10 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-[#FFB4B4]">
+            Severity {selectedCase.severity || 'Low'}
+          </div>
           <div className="terminal-text rounded-full border border-[#00E5FF]/20 bg-[#00E5FF]/10 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-[#A8F3FF]">
             Priority {selectedCase.priority}
           </div>
           <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
-            Score {selectedCase.priority_score || 0}
+            Confidence {selectedCase.confidence_score || 0}
+          </div>
+          <div className="terminal-text rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-300">
+            {selectedCase.triage_status || selectedCase.case_status}
           </div>
         </div>
       </div>
@@ -70,7 +99,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
       <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Affected Assets</p>
-          <p className="mt-2 text-sm text-slate-200">{formatList(selectedCase.affected_assets, 'Unknown assets')}</p>
+          <p className="mt-2 text-sm text-slate-200">{formatList(flattenAssets(selectedCase.affected_assets), 'Unknown assets')}</p>
         </div>
         <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Leak Data</p>
@@ -91,8 +120,27 @@ function CaseDetailPanel({ selectedCase, onSave }) {
       <div className="mt-6 grid gap-4 xl:grid-cols-[1fr_0.9fr]">
         <div className="space-y-4">
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Why This Was Flagged</p>
+            <ul className="mt-3 space-y-2 text-sm text-slate-200">
+              {(selectedCase.why_this_was_flagged || selectedCase.confidence_assessment?.reasons || []).map((line) => (
+                <li key={line}>• {line}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Severity Reason</p>
             <p className="mt-3 text-sm text-slate-200">{selectedCase.severity_reason}</p>
+          </div>
+          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Structured Impacted Assets</p>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              {assetSections.map(([label, values]) => (
+                <div key={label} className="rounded-[18px] border border-white/8 bg-white/5 p-3">
+                  <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{label}</p>
+                  <p className="mt-2 text-sm text-slate-200">{formatList(values, 'None')}</p>
+                </div>
+              ))}
+            </div>
           </div>
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Recommended Actions</p>
@@ -167,6 +215,30 @@ function CaseDetailPanel({ selectedCase, onSave }) {
           </div>
 
           <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Evidence Preview</p>
+            <div className="mt-3 space-y-3">
+              {evidenceItems.length ? (
+                evidenceItems.slice(0, 4).map((item) => (
+                  <div key={item.evidence_id} className="rounded-[18px] border border-white/8 bg-white/5 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-white">{item.source_platform || item.source || 'Unknown source'}</p>
+                      <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                        {item.timestamp ? new Date(item.timestamp).toLocaleString() : 'Unknown time'}
+                      </p>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-200">{item.cleaned_snippet || item.legacy_summary || item.raw_snippet}</p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.22em] text-slate-500">
+                      Entities: {formatList(item.matched_entities, 'None')}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-400">No evidence preview available.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
             <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Sources</p>
             <div className="mt-3 space-y-3">
               {(selectedCase.sources || []).map((source) => (
@@ -176,7 +248,7 @@ function CaseDetailPanel({ selectedCase, onSave }) {
                     Locations: {formatList(source.source_locations, 'No source locations')}
                   </p>
                   <p className="mt-1 text-xs uppercase tracking-[0.22em] text-slate-500">
-                    Evidence {source.evidence_count || 0} | last seen {source.last_seen ? new Date(source.last_seen).toLocaleString() : 'unknown'}
+                    Evidence {source.evidence_count || 0} | trust {source.trust_score || 0} | last seen {source.last_seen ? new Date(source.last_seen).toLocaleString() : 'unknown'}
                   </p>
                 </div>
               ))}

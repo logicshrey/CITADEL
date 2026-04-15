@@ -21,6 +21,20 @@ const api = axios.create({
   timeout: 15000,
 })
 
+function parseFilenameFromDisposition(headerValue) {
+  if (!headerValue) {
+    return 'citadel-exposure-report.pdf'
+  }
+
+  const utf8Match = headerValue.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1])
+  }
+
+  const plainMatch = headerValue.match(/filename="?([^"]+)"?/i)
+  return plainMatch?.[1] || 'citadel-exposure-report.pdf'
+}
+
 export const analyzeText = async (text) => {
   const response = await api.post('/analyze', { text })
   return response.data
@@ -106,6 +120,33 @@ export const getAuditEvents = async (limit = 100) => {
 export const exportCasesSnapshot = async () => {
   const response = await api.get('/cases/export')
   return response.data
+}
+
+export const exportPdfReport = async ({
+  startDate,
+  endDate,
+  severity = [],
+  category = [],
+  orgId,
+  onDownloadProgress,
+} = {}) => {
+  const response = await api.get('/export/report/pdf', {
+    params: {
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
+      ...(orgId ? { org_id: orgId } : {}),
+      ...(severity.length ? { severity } : {}),
+      ...(category.length ? { category } : {}),
+    },
+    responseType: 'blob',
+    timeout: 60000,
+    onDownloadProgress,
+  })
+
+  return {
+    blob: response.data,
+    filename: parseFilenameFromDisposition(response.headers['content-disposition']),
+  }
 }
 
 export default api

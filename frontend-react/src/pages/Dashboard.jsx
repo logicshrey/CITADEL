@@ -17,7 +17,7 @@ import Loader from '../components/Loader'
 import StatCard from '../components/StatCard'
 import TerminalConsole from '../components/TerminalConsole'
 import Toast from '../components/Toast'
-import { getMonitoringStats } from '../services/api'
+import { exportPdfReport, getMonitoringStats } from '../services/api'
 
 const pieColors = ['#00CFFF', '#FF3B3B', '#00FF9F', '#8B5CF6', '#FACC15']
 
@@ -25,6 +25,14 @@ function Dashboard() {
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
+  const [exporting, setExporting] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const [exportFilters, setExportFilters] = useState({
+    startDate: '',
+    endDate: '',
+    severity: '',
+    category: '',
+  })
 
   useEffect(() => {
     const loadStats = async () => {
@@ -55,8 +63,8 @@ function Dashboard() {
     return () => window.clearTimeout(timeoutId)
   }, [toast])
 
-  const priorityData = useMemo(
-    () => Object.entries(stats?.priority_distribution || {}).map(([name, value]) => ({ name, value })),
+  const severityData = useMemo(
+    () => Object.entries(stats?.severity_distribution || stats?.priority_distribution || {}).map(([name, value]) => ({ name, value })),
     [stats],
   )
   const statusData = useMemo(
@@ -67,8 +75,12 @@ function Dashboard() {
     () => Object.entries(stats?.source_distribution || {}).map(([name, value]) => ({ name, value })),
     [stats],
   )
-  const exposureData = useMemo(
-    () => Object.entries(stats?.exposure_distribution || {}).map(([name, value]) => ({ name, value })),
+  const categoryData = useMemo(
+    () => Object.entries(stats?.category_distribution || {}).map(([name, value]) => ({ name, value })),
+    [stats],
+  )
+  const confidenceData = useMemo(
+    () => Object.entries(stats?.confidence_distribution || {}).map(([name, value]) => ({ name, value })),
     [stats],
   )
   const activeCases = stats?.active_cases ?? 0
@@ -87,6 +99,38 @@ function Dashboard() {
     `Last scheduler cycle: ${stats?.scheduler?.last_cycle_summary?.watchlists_executed ?? 0} watchlists executed.`,
   ]
 
+  const handleExportPdf = async () => {
+    setExporting(true)
+    setDownloadProgress(0)
+
+    try {
+      const response = await exportPdfReport({
+        startDate: exportFilters.startDate || undefined,
+        endDate: exportFilters.endDate || undefined,
+        severity: exportFilters.severity ? [exportFilters.severity] : [],
+        category: exportFilters.category ? [exportFilters.category] : [],
+        onDownloadProgress: (event) => {
+          if (!event.total) {
+            return
+          }
+          setDownloadProgress(Math.round((event.loaded / event.total) * 100))
+        },
+      })
+      const url = URL.createObjectURL(response.blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = response.filename
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setToast('PDF report exported successfully.')
+    } catch (apiError) {
+      setToast(apiError?.response?.data?.detail || 'PDF report export failed.')
+    } finally {
+      setExporting(false)
+      setDownloadProgress(0)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Toast message={toast} />
@@ -99,6 +143,72 @@ function Dashboard() {
         <StatCard label="Critical Cases" value={criticalCases} accent="#FF3B3B" icon="CC" pulse />
         <StatCard label="Corroborated" value={corroboratedCases} accent="#00FF9F" icon="CO" />
         <StatCard label="New In 24h" value={stats?.new_cases_24h ?? '--'} accent="#FFC857" icon="24" />
+      </Motion.section>
+
+      <Motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-card neon-panel rounded-[32px] p-6">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-[#00E5FF]">Executive Report Export</p>
+            <h2 className="mt-2 text-3xl font-semibold text-white">Generate a PDF briefing</h2>
+            <p className="mt-3 max-w-3xl text-sm text-slate-300">
+              Export a professional CITADEL exposure intelligence report for leadership using the current date, severity, and category filters.
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <input
+              type="datetime-local"
+              value={exportFilters.startDate}
+              onChange={(event) => setExportFilters((current) => ({ ...current, startDate: event.target.value }))}
+              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+            />
+            <input
+              type="datetime-local"
+              value={exportFilters.endDate}
+              onChange={(event) => setExportFilters((current) => ({ ...current, endDate: event.target.value }))}
+              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+            />
+            <select
+              value={exportFilters.severity}
+              onChange={(event) => setExportFilters((current) => ({ ...current, severity: event.target.value }))}
+              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+            >
+              <option value="">All severities</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+            <select
+              value={exportFilters.category}
+              onChange={(event) => setExportFilters((current) => ({ ...current, category: event.target.value }))}
+              className="rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+            >
+              <option value="">All categories</option>
+              {Object.keys(stats?.category_distribution || {}).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={exporting}
+              className="terminal-text rounded-[18px] bg-[linear-gradient(135deg,#00E5FF,#00FF9F)] px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-slate-950 disabled:opacity-60"
+            >
+              {exporting ? `Exporting ${downloadProgress || 0}%` : 'Export PDF Report'}
+            </button>
+          </div>
+        </div>
+        {exporting ? (
+          <div className="mt-5 h-3 overflow-hidden rounded-full bg-white/6">
+            <Motion.div
+              className="h-full rounded-full bg-[linear-gradient(90deg,#00E5FF,#00FF9F)]"
+              initial={{ width: '0%' }}
+              animate={{ width: `${Math.max(8, downloadProgress)}%` }}
+            />
+          </div>
+        ) : null}
       </Motion.section>
 
       {loading ? (
@@ -180,19 +290,19 @@ function Dashboard() {
           <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr_0.8fr]">
             <div className="glass-card neon-panel rounded-[32px] p-6">
               <p className="text-xs uppercase tracking-[0.35em] text-[#00E5FF]">Priority Distribution</p>
-              <h3 className="mt-2 text-2xl font-semibold text-white">Exposure case urgency</h3>
+              <h3 className="mt-2 text-2xl font-semibold text-white">Exposure case severity</h3>
               <div className="mt-6 h-80">
-                {priorityData.length ? (
+                {severityData.length ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={priorityData}>
+                    <BarChart data={severityData}>
                       <XAxis dataKey="name" stroke="#94A3B8" />
                       <YAxis stroke="#94A3B8" allowDecimals={false} />
                       <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(0,229,255,0.2)', borderRadius: 16 }} />
                       <Bar dataKey="value" radius={[10, 10, 0, 0]}>
-                        {priorityData.map((entry) => (
+                        {severityData.map((entry) => (
                           <Cell
                             key={entry.name}
-                            fill={entry.name === 'CRITICAL' ? '#FF3B3B' : entry.name === 'HIGH' ? '#FF7A7A' : entry.name === 'MEDIUM' ? '#FFC857' : '#00FF9F'}
+                            fill={entry.name === 'Critical' ? '#FF3B3B' : entry.name === 'High' ? '#FF7A7A' : entry.name === 'Medium' ? '#FFC857' : '#00FF9F'}
                           />
                         ))}
                       </Bar>
@@ -226,17 +336,17 @@ function Dashboard() {
             </div>
 
             <div className="glass-card neon-panel rounded-[32px] p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-[#00FF9F]">Exposed Data Types</p>
+              <p className="text-xs uppercase tracking-[0.35em] text-[#00FF9F]">Case Categories</p>
               <h3 className="mt-2 text-2xl font-semibold text-white">Most common exposure categories</h3>
               <div className="mt-6 h-80">
-                {exposureData.length ? (
+                {categoryData.length ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={exposureData}>
+                    <BarChart data={categoryData}>
                       <XAxis dataKey="name" stroke="#94A3B8" />
                       <YAxis stroke="#94A3B8" allowDecimals={false} />
                       <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(0,255,159,0.2)', borderRadius: 16 }} />
                       <Bar dataKey="value" radius={[12, 12, 0, 0]}>
-                        {exposureData.map((entry, index) => (
+                        {categoryData.map((entry, index) => (
                           <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
                         ))}
                       </Bar>
@@ -274,21 +384,25 @@ function Dashboard() {
             </div>
 
             <div className="glass-card neon-panel rounded-[32px] p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-[#FFC857]">Operational Readiness</p>
-              <h3 className="mt-2 text-2xl font-semibold text-white">Response workflow KPIs</h3>
-              <div className="mt-6 grid gap-4">
-                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Mean Time To Review</p>
-                  <p className="mt-3 text-3xl font-semibold text-white">{stats?.mean_time_to_review_hours ?? 0}h</p>
-                </div>
-                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Corroborated Cases</p>
-                  <p className="mt-3 text-3xl font-semibold text-[#00E5FF]">{corroboratedCases}</p>
-                </div>
-                <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-                  <p className="text-xs uppercase tracking-[0.28em] text-slate-500">Enabled Watchlists</p>
-                  <p className="mt-3 text-3xl font-semibold text-[#FFC857]">{stats?.enabled_watchlists ?? 0}</p>
-                </div>
+              <p className="text-xs uppercase tracking-[0.35em] text-[#FFC857]">Confidence Distribution</p>
+              <h3 className="mt-2 text-2xl font-semibold text-white">How certain the findings are</h3>
+              <div className="mt-6 h-72">
+                {confidenceData.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={confidenceData}>
+                      <XAxis dataKey="name" stroke="#94A3B8" />
+                      <YAxis stroke="#94A3B8" allowDecimals={false} />
+                      <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,200,87,0.2)', borderRadius: 16 }} />
+                      <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                        {confidenceData.map((entry, index) => (
+                          <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-slate-400">No confidence distribution available yet.</div>
+                )}
               </div>
             </div>
 
