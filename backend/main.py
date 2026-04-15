@@ -5,9 +5,9 @@ from queue import Empty
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 from utils.config import BACKEND_PORT, WATCHLIST_DEFAULT_INTERVAL_SECONDS
 from utils.monitoring_runtime import MonitoringEventBus, MonitoringScheduler
 from utils.nlp_engine import ThreatIntelligenceEngine
+from utils.reporting import generate_pdf_report
 
 
 app = FastAPI(
@@ -194,6 +195,33 @@ def list_cases(limit: int = 200, status: str | None = None, priority: str | None
 @app.get("/cases/export")
 def export_cases() -> dict[str, Any]:
     return engine.db.export_monitoring_snapshot()
+
+
+@app.get("/export/report/pdf")
+def export_pdf_report(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    severity: list[str] = Query(default=[]),
+    category: list[str] = Query(default=[]),
+    org_id: str | None = None,
+) -> FileResponse:
+    try:
+        cases = engine.db.list_cases(limit=5000)
+        file_path = generate_pdf_report(
+            cases,
+            start_date=start_date,
+            end_date=end_date,
+            severity=severity,
+            category=category,
+            org_id=org_id,
+        )
+        return FileResponse(
+            path=str(file_path),
+            media_type="application/pdf",
+            filename=file_path.name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF report export failed: {exc}") from exc
 
 
 @app.get("/cases/{case_id}")

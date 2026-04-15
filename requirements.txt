@@ -14,3 +14,4 @@ pymongo
 requests
 python-dotenv
 telethon
+reportlab
