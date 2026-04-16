@@ -71,6 +71,7 @@ class FakeDB:
     def __init__(self, cases: list[dict], *, send_count: int = 0) -> None:
         self.cases = {case["id"]: case for case in cases}
         self.audit_events: list[dict] = []
+        self.signed_reports: dict[str, dict] = {}
         self.send_count = send_count
 
     def get_case(self, case_id: str) -> dict | None:
@@ -88,6 +89,24 @@ class FakeDB:
 
     def count_audit_events(self, **_: dict) -> int:
         return self.send_count
+
+    def save_signed_report(self, payload: dict) -> dict:
+        record = dict(payload)
+        self.signed_reports[record["report_id"]] = record
+        return record
+
+    def get_signed_report(self, report_id: str) -> dict | None:
+        record = self.signed_reports.get(report_id)
+        return dict(record) if record else None
+
+    def update_signed_report(self, report_id: str, updates: dict) -> dict | None:
+        if report_id not in self.signed_reports:
+            return None
+        self.signed_reports[report_id].update(updates)
+        return dict(self.signed_reports[report_id])
+
+    def expire_signed_reports(self, **_: dict) -> int:
+        return 0
 
 
 class CyberCellReportingTests(unittest.TestCase):
@@ -170,6 +189,9 @@ class CyberCellReportingTests(unittest.TestCase):
 
         self.assertEqual(send_response["status"], "sent")
         self.assertTrue(any(event["event_type"] == "cyber_cell_report_sent" for event in fake_db.audit_events))
+        self.assertTrue(send_response["report_id"])
+        sent_event = next(event for event in fake_db.audit_events if event["event_type"] == "cyber_cell_report_sent")
+        self.assertEqual(sent_event["report_id"], send_response["report_id"])
 
     def test_rate_limit_enforcement_works(self) -> None:
         fake_db = FakeDB([build_case()], send_count=3)

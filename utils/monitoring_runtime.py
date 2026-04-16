@@ -93,6 +93,7 @@ class MonitoringScheduler:
                 cycle_summary["watchlists_executed"] += 1
                 cycle_summary["cases_touched"] += outcome.get("case_count", 0)
 
+            cycle_summary["signed_reports_expired"] = self.engine.db.expire_signed_reports(now=now)
             self.engine.db.update_scheduler_state(cycle_summary)
 
     def run_watchlist_now(self, watchlist_id: str) -> dict[str, Any]:

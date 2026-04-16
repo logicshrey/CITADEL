@@ -192,6 +192,21 @@ class MongoManager:
             since=since,
         )
 
+    def save_signed_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.local_store.save_signed_report(payload)
+
+    def get_signed_report(self, report_id: str) -> dict[str, Any] | None:
+        return self.local_store.get_signed_report(report_id)
+
+    def list_signed_reports(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.local_store.list_signed_reports(limit=limit)
+
+    def update_signed_report(self, report_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        return self.local_store.update_signed_report(report_id, updates)
+
+    def expire_signed_reports(self, *, now: datetime | None = None) -> int:
+        return self.local_store.expire_signed_reports(now=now)
+
     def export_monitoring_snapshot(self) -> dict[str, Any]:
         return self.local_store.export_snapshot()
 

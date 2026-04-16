@@ -146,6 +146,9 @@ export const exportPdfReport = async ({
   return {
     blob: response.data,
     filename: parseFilenameFromDisposition(response.headers['content-disposition']),
+    reportId: response.headers['x-citadel-report-id'] || '',
+    verificationUrl: response.headers['x-citadel-verification-url'] || '',
+    signatureStatus: response.headers['x-citadel-signature-status'] || 'unsigned',
   }
 }
 
@@ -161,6 +164,23 @@ export const getCyberCellReportingStatus = async () => {
 
 export const sendCyberCellReport = async (payload) => {
   const response = await api.post('/api/v1/report/cybercell/send', payload, { timeout: 60000 })
+  return response.data
+}
+
+export const getVerifiedReport = async (reportId) => {
+  const response = await api.get(`/api/v1/verify/report/${reportId}`, { timeout: 15000 })
+  return response.data
+}
+
+export const verifyReportUpload = async (reportId, file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  const response = await api.post(`/api/v1/verify/report/${reportId}/upload`, formData, {
+    timeout: 60000,
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
   return response.data
 }
 

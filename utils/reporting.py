@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 from collections import Counter
 from datetime import datetime
@@ -12,7 +13,7 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from utils.case_schema import flatten_affected_assets, normalize_case_list
 
@@ -90,6 +91,7 @@ def generate_pdf_report(
     severity: list[str] | None = None,
     category: list[str] | None = None,
     org_id: str | None = None,
+    verification_details: dict[str, Any] | None = None,
 ) -> Path:
     filtered_cases = filter_cases(
         cases,
@@ -103,12 +105,33 @@ def generate_pdf_report(
     temp_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     file_path = temp_dir / f"citadel-exposure-report-{timestamp}.pdf"
-    _build_pdf(file_path, filtered_cases, start_date=start_date, end_date=end_date, org_id=org_id)
+    _build_pdf(
+        file_path,
+        filtered_cases,
+        start_date=start_date,
+        end_date=end_date,
+        org_id=org_id,
+        verification_details=verification_details,
+    )
     return file_path
 
 
-def _build_pdf(file_path: Path, cases: list[dict[str, Any]], *, start_date: str | None, end_date: str | None, org_id: str | None) -> None:
-    elements = _build_report_story(cases=cases, start_date=start_date, end_date=end_date, org_id=org_id)
+def _build_pdf(
+    file_path: Path,
+    cases: list[dict[str, Any]],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    org_id: str | None,
+    verification_details: dict[str, Any] | None = None,
+) -> None:
+    elements = _build_report_story(
+        cases=cases,
+        start_date=start_date,
+        end_date=end_date,
+        org_id=org_id,
+        verification_details=verification_details,
+    )
     doc = SimpleDocTemplate(
         str(file_path),
         pagesize=A4,
@@ -120,7 +143,14 @@ def _build_pdf(file_path: Path, cases: list[dict[str, Any]], *, start_date: str 
     doc.build(elements, onFirstPage=_draw_header_footer, onLaterPages=_draw_header_footer)
 
 
-def _build_report_story(*, cases: list[dict[str, Any]], start_date: str | None, end_date: str | None, org_id: str | None) -> list[Any]:
+def _build_report_story(
+    *,
+    cases: list[dict[str, Any]],
+    start_date: str | None,
+    end_date: str | None,
+    org_id: str | None,
+    verification_details: dict[str, Any] | None = None,
+) -> list[Any]:
     doc = SimpleDocTemplate(
         "citadel-preview.pdf",
         pagesize=A4,
@@ -169,6 +199,9 @@ def _build_report_story(*, cases: list[dict[str, Any]], start_date: str | None, 
     elements.extend(_build_recommended_actions_section(styles, cases))
     elements.append(PageBreak())
     elements.extend(_build_appendix(styles, cases))
+    if verification_details:
+        elements.append(PageBreak())
+        elements.extend(_build_verification_section(styles, verification_details))
 
     return elements
 
@@ -583,6 +616,69 @@ def _build_appendix(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
         )
     )
     return elements
+
+
+def _build_verification_section(styles: Any, verification_details: dict[str, Any]) -> list[Any]:
+    elements = [Paragraph("Report Authenticity Verification", styles["CitadelHeading"])]
+    if verification_details.get("signed"):
+        elements.append(
+            Paragraph(
+                "Use the report identifier, QR code, and public verification portal to validate authenticity without accessing internal evidence.",
+                styles["CitadelBody"],
+            )
+        )
+    else:
+        elements.append(
+            Paragraph(
+                "This report was generated without an active signing key. The public verification portal can still identify the record, but the report is unsigned.",
+                styles["CitadelBody"],
+            )
+        )
+    elements.append(Spacer(1, 0.15 * inch))
+    rows = [
+        ["Field", "Value"],
+        ["Report ID", verification_details.get("report_id") or "Unavailable"],
+        ["Generated timestamp", verification_details.get("generated_at") or "Unavailable"],
+        ["PDF SHA256 hash", verification_details.get("pdf_sha256_short") or "Available on verification portal"],
+        ["Digital signature", verification_details.get("signature_short") or "Unsigned"],
+        ["Signing algorithm", verification_details.get("signing_algorithm") or "Unsigned"],
+        ["Key fingerprint", verification_details.get("public_key_fingerprint_short") or "Unavailable"],
+        ["Verification URL", verification_details.get("verification_url") or "Unavailable"],
+    ]
+    if verification_details.get("warning"):
+        rows.append(["Warning", verification_details.get("warning")])
+    elements.append(
+        _styled_table(
+            rows,
+            styles=styles,
+            col_widths=_table_col_widths(7.0 * inch, [0.28, 0.72]),
+        )
+    )
+    qr_image = _build_verification_qr_image(verification_details.get("verification_url"))
+    if qr_image is not None:
+        elements.append(Spacer(1, 0.15 * inch))
+        elements.append(qr_image)
+    return elements
+
+
+def _build_verification_qr_image(url: Any) -> Image | None:
+    verification_url = str(url or "").strip()
+    if not verification_url:
+        return None
+    try:
+        import qrcode
+    except Exception:
+        return None
+    qr = qrcode.QRCode(box_size=4, border=1)
+    qr.add_data(verification_url)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+    qr_image = Image(buffer, width=1.5 * inch, height=1.5 * inch)
+    qr_image.hAlign = "LEFT"
+    return qr_image
 
 
 def _styled_table(rows: list[list[str]], *, styles: Any, col_widths: list[float]) -> Table:

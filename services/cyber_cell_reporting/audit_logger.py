@@ -28,6 +28,11 @@ def record_preview_audit(
     preview_id: str,
     complaint_body: str,
     pdf_bytes: bytes,
+    report_id: str | None = None,
+    verification_url: str | None = None,
+    signing_algorithm: str | None = None,
+    signature_status: str | None = None,
+    public_key_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     return db.record_audit_event(
         {
@@ -42,6 +47,11 @@ def record_preview_audit(
             "preview_id": preview_id,
             "pdf_hash": _hash_bytes(pdf_bytes),
             "complaint_hash": _hash_text(complaint_body),
+            "report_id": report_id,
+            "verification_url": verification_url,
+            "signing_algorithm": signing_algorithm,
+            "signature_status": signature_status,
+            "public_key_fingerprint": public_key_fingerprint,
         }
     )
 
@@ -59,6 +69,11 @@ def record_send_audit(
     pdf_bytes: bytes,
     status: str,
     error_message: str | None = None,
+    report_id: str | None = None,
+    verification_url: str | None = None,
+    signing_algorithm: str | None = None,
+    signature_status: str | None = None,
+    public_key_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "event_type": "cyber_cell_report_sent" if status == "success" else "cyber_cell_report_failed",
@@ -74,6 +89,11 @@ def record_send_audit(
         "preview_id": preview_id,
         "pdf_hash": _hash_bytes(pdf_bytes),
         "complaint_hash": _hash_text(complaint_body),
+        "report_id": report_id,
+        "verification_url": verification_url,
+        "signing_algorithm": signing_algorithm,
+        "signature_status": signature_status,
+        "public_key_fingerprint": public_key_fingerprint,
     }
     return db.record_audit_event(payload)
 

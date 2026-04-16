@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from queue import Empty
 from pathlib import Path
 from typing import Any
+import uuid
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -18,7 +20,7 @@ if str(ROOT_DIR) not in sys.path:
 from utils.config import BACKEND_PORT, WATCHLIST_DEFAULT_INTERVAL_SECONDS
 from utils.monitoring_runtime import MonitoringEventBus, MonitoringScheduler
 from utils.nlp_engine import ThreatIntelligenceEngine
-from utils.reporting import generate_pdf_report
+from utils.reporting import filter_cases, generate_pdf_report
 from services.cyber_cell_reporting import (
     CyberCellReportRequest,
     CyberCellValidationError,
@@ -27,6 +29,14 @@ from services.cyber_cell_reporting import (
     send_report,
 )
 from services.cyber_cell_reporting.email_sender import CyberCellEmailError
+from security.report_signing import build_verification_url
+from services.signed_reports import (
+    build_public_verification_response,
+    create_signed_report_record,
+    prepare_report_verification_details,
+    verify_uploaded_report_bytes,
+)
+from services.report_verification_cache import verification_response_cache
 
 
 app = FastAPI(
@@ -40,6 +50,12 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "X-Citadel-Report-Id",
+        "X-Citadel-Verification-Url",
+        "X-Citadel-Signature-Status",
+        "Content-Disposition",
+    ],
 )
 
 engine = ThreatIntelligenceEngine()
@@ -169,6 +185,11 @@ def health_check() -> dict[str, str]:
     }
 
 
+@app.get("/verify/{report_id}")
+def redirect_public_verify_page(report_id: str) -> RedirectResponse:
+    return RedirectResponse(url=build_verification_url(report_id), status_code=307)
+
+
 @app.post("/collect-intel")
 def collect_intelligence(payload: CollectIntelRequest) -> dict[str, Any]:
     try:
@@ -207,6 +228,7 @@ def export_cases() -> dict[str, Any]:
 
 @app.get("/export/report/pdf")
 def export_pdf_report(
+    request: Request,
     start_date: str | None = None,
     end_date: str | None = None,
     severity: list[str] = Query(default=[]),
@@ -215,7 +237,10 @@ def export_pdf_report(
 ) -> FileResponse:
     try:
         cases = engine.db.list_cases(limit=5000)
-        file_path = generate_pdf_report(
+        report_id = str(uuid.uuid4())
+        generated_at = datetime.now(timezone.utc).isoformat()
+        verification_url = build_verification_url(report_id)
+        filtered_cases = filter_cases(
             cases,
             start_date=start_date,
             end_date=end_date,
@@ -223,11 +248,43 @@ def export_pdf_report(
             category=category,
             org_id=org_id,
         )
-        return FileResponse(
+        file_path = generate_pdf_report(
+            cases,
+            start_date=start_date,
+            end_date=end_date,
+            severity=severity,
+            category=category,
+            org_id=org_id,
+            verification_details=prepare_report_verification_details(
+                report_id=report_id,
+                created_at=generated_at,
+                public_verification_url=verification_url,
+            ),
+        )
+        pdf_bytes = Path(file_path).read_bytes()
+        signed_report = create_signed_report_record(
+            engine.db,
+            org_id=org_id or "multiple-organizations",
+            created_by_user_id=request.headers.get("X-User-Id") or "anonymous",
+            report_type="executive",
+            cases=filtered_cases,
+            pdf_bytes=pdf_bytes,
+            pdf_file_path=file_path,
+            report_id=report_id,
+            created_at=generated_at,
+            public_verification_url=verification_url,
+        )
+        response = FileResponse(
             path=str(file_path),
             media_type="application/pdf",
             filename=file_path.name,
+            headers={
+                "X-Citadel-Report-Id": str(signed_report.get("report_id") or ""),
+                "X-Citadel-Verification-Url": str(signed_report.get("public_verification_url") or ""),
+                "X-Citadel-Signature-Status": str(signed_report.get("signature_status") or "unsigned"),
+            },
         )
+        return response
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PDF report export failed: {exc}") from exc
 
@@ -370,6 +427,8 @@ def send_cyber_cell_report(payload: CyberCellReportRequest, request: Request) ->
                 "timestamp": response.get("timestamp"),
                 "delivery_mode": response.get("delivery_mode"),
                 "sent_to": response.get("sent_to", []),
+                "report_id": response.get("report_id"),
+                "verification_url": response.get("verification_url"),
             }
         )
         return response
@@ -382,6 +441,34 @@ def send_cyber_cell_report(payload: CyberCellReportRequest, request: Request) ->
     except Exception as exc:
         event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": str(exc)})
         raise HTTPException(status_code=500, detail=f"Cyber cell report send failed: {exc}") from exc
+
+
+@app.get("/api/v1/verify/report/{report_id}")
+def get_report_verification_details(report_id: str) -> dict[str, Any]:
+    cached = verification_response_cache.get(report_id)
+    if cached is not None:
+        return cached
+    record = engine.db.get_signed_report(report_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Signed report not found.")
+    response = build_public_verification_response(record)
+    return verification_response_cache.set(report_id, response)
+
+
+@app.post("/api/v1/verify/report/{report_id}/upload")
+async def verify_uploaded_report(report_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    if engine.db.get_signed_report(report_id) is None:
+        raise HTTPException(status_code=404, detail="Signed report not found.")
+    verification_response_cache.invalidate(report_id)
+    pdf_bytes = await file.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded PDF is empty.")
+    try:
+        return verify_uploaded_report_bytes(engine.db, report_id, pdf_bytes)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Signed report not found.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Report verification failed: {exc}") from exc
 
 
 if __name__ == "__main__":

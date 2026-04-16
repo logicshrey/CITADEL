@@ -29,6 +29,7 @@ function Dashboard() {
   const [exporting, setExporting] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [reportingOpen, setReportingOpen] = useState(false)
+  const [lastExportVerification, setLastExportVerification] = useState(null)
   const [exportFilters, setExportFilters] = useState({
     orgId: '',
     startDate: '',
@@ -138,7 +139,13 @@ function Dashboard() {
       anchor.download = response.filename
       anchor.click()
       URL.revokeObjectURL(url)
-      setToast('PDF report exported successfully.')
+      setLastExportVerification({
+        reportId: response.reportId,
+        verificationUrl: response.verificationUrl,
+        signatureStatus: response.signatureStatus,
+        orgId: exportFilters.orgId,
+      })
+      setToast('PDF report exported successfully. CVRP verification details are available below.')
     } catch (apiError) {
       setToast(apiError?.response?.data?.detail || 'PDF report export failed.')
     } finally {
@@ -200,6 +207,9 @@ function Dashboard() {
               Export a professional CITADEL exposure intelligence report for one selected organization. Date,
               severity, and category filters are optional refinements.
             </p>
+            <div className="mt-4 inline-flex items-center rounded-full border border-[#00FF9F]/25 bg-[#00FF9F]/8 px-3 py-1.5 text-[11px] uppercase tracking-[0.26em] text-[#B8FFE3]">
+              CVRP verified reporting enabled
+            </div>
           </div>
           <div className="w-full xl:max-w-5xl">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_1fr_1fr]">
@@ -209,10 +219,17 @@ function Dashboard() {
                   value={exportFilters.orgId}
                   onChange={(event) => setExportFilters((current) => ({ ...current, orgId: event.target.value }))}
                   className="w-full rounded-[16px] border border-white/8 bg-black/10 px-4 py-3 text-sm text-slate-100 outline-none"
+                  style={{ color: exportFilters.orgId ? '#F8FAFC' : '#94A3B8' }}
                 >
-                  <option value="">Select organization</option>
+                  <option value="" style={{ color: '#0F172A', backgroundColor: '#F8FAFC' }}>
+                    Select organization
+                  </option>
                   {organizationOptions.map((organization) => (
-                    <option key={organization.name} value={organization.name}>
+                    <option
+                      key={organization.name}
+                      value={organization.name}
+                      style={{ color: '#0F172A', backgroundColor: '#F8FAFC' }}
+                    >
                       {organization.name} ({organization.value} case{organization.value === 1 ? '' : 's'})
                     </option>
                   ))}
@@ -297,6 +314,9 @@ function Dashboard() {
             <p className="mt-3 text-xs uppercase tracking-[0.2em] text-slate-500">
               Reports are exported for the selected organization only.
             </p>
+            <p className="mt-2 text-sm text-slate-400">
+              After each export, CITADEL creates a verification record with a report ID and public verification link.
+            </p>
           </div>
         </div>
         {exporting ? (
@@ -306,6 +326,33 @@ function Dashboard() {
               initial={{ width: '0%' }}
               animate={{ width: `${Math.max(8, downloadProgress)}%` }}
             />
+          </div>
+        ) : null}
+        {lastExportVerification ? (
+          <div className="mt-5 rounded-[24px] border border-[#00E5FF]/20 bg-[rgba(2,6,23,0.82)] p-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.28em] text-[#00E5FF]">Last exported CVRP record</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Verification metadata ready</h3>
+                <div className="mt-3 space-y-2 text-sm text-slate-300">
+                  <p>Organization: <span className="text-white">{lastExportVerification.orgId}</span></p>
+                  <p>Report ID: <span className="break-all text-white">{lastExportVerification.reportId || 'Unavailable'}</span></p>
+                  <p>Signature status: <span className="text-white">{lastExportVerification.signatureStatus || 'unsigned'}</span></p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                {lastExportVerification.verificationUrl ? (
+                  <a
+                    href={lastExportVerification.verificationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="terminal-text inline-flex rounded-[18px] border border-[#00E5FF]/35 bg-[#00E5FF]/10 px-5 py-3 text-sm font-bold uppercase tracking-[0.24em] text-[#CFFAFE]"
+                  >
+                    Open Verify Portal
+                  </a>
+                ) : null}
+              </div>
+            </div>
           </div>
         ) : null}
       </Motion.section>

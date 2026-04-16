@@ -186,6 +186,26 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Sensitive Data Detected", paragraph_text)
         self.assertIn("Verification Status", paragraph_text)
 
+    def test_report_story_includes_authenticity_section_when_verification_details_exist(self) -> None:
+        story = _build_report_story(
+            cases=[make_case()],
+            start_date=None,
+            end_date=None,
+            org_id="acme.com",
+            verification_details={
+                "signed": True,
+                "report_id": "report-123",
+                "generated_at": "2026-04-16T00:00:00+00:00",
+                "pdf_sha256_short": "abcd1234",
+                "signature_short": "sig1234",
+                "verification_url": "http://127.0.0.1:8001/verify/report-123",
+                "signing_algorithm": "Ed25519",
+                "public_key_fingerprint_short": "fingerprint1234",
+            },
+        )
+        paragraph_text = [block.getPlainText() for block in story if isinstance(block, Paragraph)]
+        self.assertIn("Report Authenticity Verification", paragraph_text)
+
 
 if __name__ == "__main__":
     unittest.main()

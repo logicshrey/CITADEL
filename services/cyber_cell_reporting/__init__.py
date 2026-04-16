@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,12 @@ from services.cyber_cell_reporting.email_sender import (
 )
 from services.cyber_cell_reporting.eligibility_validator import validate_case_selection
 from services.cyber_cell_reporting.preview_store import PreviewStore, build_request_fingerprint
+from services.signed_reports import (
+    build_pdf_verification_details,
+    create_signed_report_record,
+    prepare_report_verification_details,
+)
+from security.report_signing import build_verification_url
 from utils.config import CYBER_CELL_DAILY_SEND_LIMIT
 from utils.reporting import filter_cases, generate_pdf_report
 
@@ -139,11 +146,13 @@ def _selected_case_preview(case: dict[str, Any], rejection_reasons: list[str]) -
 
 
 def _generate_attachments(
+    db: Any,
     cases: list[dict[str, Any]],
     *,
     payload: CyberCellReportRequest,
     organization: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    user_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     complaint = build_complaint_payload(
         cases,
         organization_name=_organization_name(payload, organization),
@@ -151,6 +160,9 @@ def _generate_attachments(
         organization_details=payload.organization_details.model_dump() if payload.organization_details else {},
         authority_location=payload.authority_location,
     )
+    report_id = str(uuid.uuid4())
+    created_at = _now_iso()
+    verification_url = build_verification_url(report_id)
     pdf_path = generate_pdf_report(
         cases,
         start_date=payload.date_range.start_date if payload.date_range else None,
@@ -158,8 +170,14 @@ def _generate_attachments(
         severity=payload.severity,
         category=[],
         org_id=organization,
+        verification_details=prepare_report_verification_details(
+            report_id=report_id,
+            created_at=created_at,
+            public_verification_url=verification_url,
+        ),
     )
     pdf_bytes = Path(pdf_path).read_bytes()
+    bundle_bytes: bytes | None = None
     attachments = [
         {
             "name": "citadel_exposure_report.pdf",
@@ -190,7 +208,24 @@ def _generate_attachments(
                 "size_bytes": len(bundle_bytes),
             }
         )
-    return attachments, complaint
+    signed_report = create_signed_report_record(
+        db,
+        org_id=organization,
+        created_by_user_id=user_id,
+        report_type="cybercell",
+        cases=cases,
+        pdf_bytes=pdf_bytes,
+        pdf_file_path=pdf_path,
+        evidence_bytes=bundle_bytes,
+        report_id=report_id,
+        created_at=created_at,
+        public_verification_url=verification_url,
+    )
+    complaint["complaint_body"] = (
+        f"{complaint['complaint_body']}\n\n"
+        f"To verify authenticity, please scan the QR code in the PDF or visit: {signed_report['public_verification_url']}"
+    )
+    return attachments, complaint, signed_report
 
 
 def _ensure_send_rate_limit(db: Any, org_id: str) -> None:
@@ -224,7 +259,13 @@ def build_preview(db: Any, payload: CyberCellReportRequest, *, user_id: str | No
     complaint_body = ""
     preview_metadata: dict[str, Any] | None = None
     if validation["eligible_cases"]:
-        attachments, complaint = _generate_attachments(validation["eligible_cases"], payload=payload, organization=validation["organization"])
+        attachments, complaint, signed_report = _generate_attachments(
+            db,
+            validation["eligible_cases"],
+            payload=payload,
+            organization=validation["organization"],
+            user_id=_normalize_user_id(user_id, payload),
+        )
         fingerprint = build_request_fingerprint(_selection_scope(payload))
         preview_metadata = preview_store.create(
             fingerprint=fingerprint,
@@ -248,6 +289,11 @@ def build_preview(db: Any, payload: CyberCellReportRequest, *, user_id: str | No
             preview_id=preview_metadata["preview_id"],
             complaint_body=complaint_body,
             pdf_bytes=attachments[0]["content"],
+            report_id=signed_report.get("report_id"),
+            verification_url=signed_report.get("public_verification_url"),
+            signing_algorithm=signed_report.get("signing_algorithm"),
+            signature_status=signed_report.get("signature_status"),
+            public_key_fingerprint=signed_report.get("public_key_fingerprint"),
         )
 
     return {
@@ -261,6 +307,10 @@ def build_preview(db: Any, payload: CyberCellReportRequest, *, user_id: str | No
         "rejected_cases": validation["rejected_case_ids"],
         "rejection_reasons": validation["rejection_reasons"],
         "report_summary": validation["report_summary"],
+        "report_id": signed_report.get("report_id") if validation["eligible_cases"] else None,
+        "verification_url": signed_report.get("public_verification_url") if validation["eligible_cases"] else None,
+        "signature_status": signed_report.get("signature_status") if validation["eligible_cases"] else "unsigned",
+        "verification_details": build_pdf_verification_details(signed_report) if validation["eligible_cases"] else None,
     }
 
 
@@ -303,7 +353,13 @@ def send_report(db: Any, payload: CyberCellReportRequest, *, user_id: str | None
             error_message=exc.message,
         )
         raise
-    attachments, complaint = _generate_attachments(validation["eligible_cases"], payload=payload, organization=validation["organization"])
+    attachments, complaint, signed_report = _generate_attachments(
+        db,
+        validation["eligible_cases"],
+        payload=payload,
+        organization=validation["organization"],
+        user_id=normalized_user_id,
+    )
 
     try:
         delivery = send_cyber_cell_email(
@@ -326,6 +382,11 @@ def send_report(db: Any, payload: CyberCellReportRequest, *, user_id: str | None
             pdf_bytes=attachments[0]["content"] if attachments else b"",
             status="failed",
             error_message=str(exc),
+            report_id=signed_report.get("report_id"),
+            verification_url=signed_report.get("public_verification_url"),
+            signing_algorithm=signed_report.get("signing_algorithm"),
+            signature_status=signed_report.get("signature_status"),
+            public_key_fingerprint=signed_report.get("public_key_fingerprint"),
         )
         raise
 
@@ -340,7 +401,14 @@ def send_report(db: Any, payload: CyberCellReportRequest, *, user_id: str | None
         complaint_body=complaint["complaint_body"],
         pdf_bytes=attachments[0]["content"] if attachments else b"",
         status="success",
+        report_id=signed_report.get("report_id"),
+        verification_url=signed_report.get("public_verification_url"),
+        signing_algorithm=signed_report.get("signing_algorithm"),
+        signature_status=signed_report.get("signature_status"),
+        public_key_fingerprint=signed_report.get("public_key_fingerprint"),
     )
+    if signed_report.get("status") != "sent":
+        db.update_signed_report(signed_report["report_id"], {"status": "sent", "audit_reference_id": audit.get("id")})
     return {
         "status": "sent",
         "audit_id": audit.get("id"),
@@ -348,6 +416,9 @@ def send_report(db: Any, payload: CyberCellReportRequest, *, user_id: str | None
         "delivery_mode": delivery.get("delivery_mode", "mock" if delivery.get("mocked") else "live"),
         "attachment_names": delivery["attachment_names"],
         "timestamp": audit.get("send_timestamp") or audit.get("timestamp"),
+        "report_id": signed_report.get("report_id"),
+        "verification_url": signed_report.get("public_verification_url"),
+        "signature_status": signed_report.get("signature_status"),
     }
 
 

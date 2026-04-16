@@ -7,6 +7,7 @@ import Analyzer from './pages/Analyzer'
 import Dashboard from './pages/Dashboard'
 import Feed from './pages/Feed'
 import Upload from './pages/Upload'
+import VerifyReport from './pages/VerifyReport'
 import { getHealth } from './services/api'
 
 function BackgroundParticles() {
@@ -102,6 +103,7 @@ function App() {
               <Route path="/monitor" element={<Feed />} />
               <Route path="/feed" element={<Navigate to="/monitor" replace />} />
               <Route path="/upload" element={<Upload />} />
+              <Route path="/verify/:reportId" element={<VerifyReport />} />
             </Routes>
           </AnimatePresence>
         </Motion.main>

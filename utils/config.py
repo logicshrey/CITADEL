@@ -9,6 +9,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 DATA_DIR = ROOT_DIR / "data"
 MODELS_DIR = ROOT_DIR / "models"
+KEYS_DIR = ROOT_DIR / "keys"
 
 SPAM_DATA_PATH = DATA_DIR / "spam.csv"
 CYBER_DATA_PATH = DATA_DIR / "cyber.csv"
@@ -62,6 +63,13 @@ REPORTING_ENABLED = os.getenv("REPORTING_ENABLED", "false").strip().lower() in {
 REPORTING_MOCK_MODE = os.getenv("REPORTING_MOCK_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 CYBER_CELL_DAILY_SEND_LIMIT = int(os.getenv("CYBER_CELL_DAILY_SEND_LIMIT", "3") or 3)
 CYBER_CELL_PREVIEW_TTL_SECONDS = int(os.getenv("CYBER_CELL_PREVIEW_TTL_SECONDS", "1800") or 1800)
+REPORT_SIGNING_ENABLED = os.getenv("REPORT_SIGNING_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+REPORT_SIGNING_DEV_AUTO_GENERATE = os.getenv("REPORT_SIGNING_DEV_AUTO_GENERATE", "true").strip().lower() in {"1", "true", "yes", "on"}
+REPORT_PRIVATE_KEY_PATH = Path(os.getenv("REPORT_PRIVATE_KEY_PATH", str(KEYS_DIR / "private_key.pem")))
+REPORT_PUBLIC_KEY_PATH = Path(os.getenv("REPORT_PUBLIC_KEY_PATH", str(KEYS_DIR / "public_key.pem")))
+REPORT_SIGNED_REPORT_EXPIRY_DAYS = int(os.getenv("REPORT_SIGNED_REPORT_EXPIRY_DAYS", "30") or 30)
+REPORT_VERIFICATION_BASE_URL = os.getenv("REPORT_VERIFICATION_BASE_URL", "http://127.0.0.1:5173")
+REPORT_VERIFICATION_CACHE_TTL_SECONDS = int(os.getenv("REPORT_VERIFICATION_CACHE_TTL_SECONDS", "60") or 60)
 
 PLATFORM_REPUTATION_SCORES = {
     "Telegram": 0.72,

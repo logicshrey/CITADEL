@@ -88,6 +88,7 @@ class LocalMonitoringStore:
             "cases": [],
             "watchlists": [],
             "audit_events": [],
+            "signed_reports": [],
             "scheduler": {
                 "last_tick_at": None,
                 "last_cycle_summary": None,
@@ -106,6 +107,7 @@ class LocalMonitoringStore:
             state["cases"] = normalize_case_list(state.get("cases", []))
             state.setdefault("watchlists", [])
             state.setdefault("audit_events", [])
+            state.setdefault("signed_reports", [])
             state.setdefault("scheduler", {"last_tick_at": None, "last_cycle_summary": None})
             return state
         except Exception:
@@ -472,6 +474,73 @@ class LocalMonitoringStore:
         with self._lock:
             return list(self._state["audit_events"][-limit:][::-1])
 
+    def save_signed_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            report = dict(payload)
+            report.setdefault("report_id", self._new_id("report"))
+            report.setdefault("created_at", _now_iso())
+            report.setdefault("status", "generated")
+            existing_index = next(
+                (
+                    index
+                    for index, item in enumerate(self._state["signed_reports"])
+                    if item.get("report_id") == report.get("report_id")
+                ),
+                None,
+            )
+            if existing_index is None:
+                self._state["signed_reports"].append(report)
+            else:
+                merged = dict(self._state["signed_reports"][existing_index])
+                merged.update(report)
+                self._state["signed_reports"][existing_index] = merged
+                report = merged
+            self._state["signed_reports"].sort(key=lambda item: item.get("created_at", ""), reverse=True)
+            self._save()
+            return dict(report)
+
+    def get_signed_report(self, report_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            for report in self._state["signed_reports"]:
+                if report.get("report_id") == report_id:
+                    return dict(report)
+        return None
+
+    def list_signed_reports(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._state["signed_reports"][:limit]]
+
+    def update_signed_report(self, report_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            for index, report in enumerate(self._state["signed_reports"]):
+                if report.get("report_id") != report_id:
+                    continue
+                merged = dict(report)
+                merged.update(updates)
+                merged["report_id"] = report_id
+                self._state["signed_reports"][index] = merged
+                self._save()
+                return dict(merged)
+        return None
+
+    def expire_signed_reports(self, *, now: datetime | None = None) -> int:
+        with self._lock:
+            current_time = now or datetime.now(timezone.utc)
+            expired_count = 0
+            changed = False
+            for report in self._state["signed_reports"]:
+                if str(report.get("status") or "").lower() == "expired":
+                    continue
+                expires_at = _parse_iso(report.get("expires_at"))
+                if expires_at is None or expires_at > current_time:
+                    continue
+                report["status"] = "expired"
+                expired_count += 1
+                changed = True
+            if changed:
+                self._save()
+            return expired_count
+
     def count_audit_events(
         self,
         *,
@@ -505,6 +574,7 @@ class LocalMonitoringStore:
                 "cases": normalize_case_list(list(self._state["cases"])),
                 "watchlists": list(self._state["watchlists"]),
                 "audit_events": list(self._state["audit_events"][-100:]),
+                "signed_reports": list(self._state["signed_reports"][-100:]),
                 "scheduler": dict(self._state["scheduler"]),
             }
 

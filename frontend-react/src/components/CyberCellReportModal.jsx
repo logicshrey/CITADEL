@@ -146,7 +146,9 @@ function CyberCellReportModal({ isOpen, onClose, defaultRequest, onSuccess, onEr
         confirmation_flag: formState.confirmationFlag,
       })
       const deliveryLabel = response.delivery_mode === 'live' ? 'live email delivery confirmed' : 'mock delivery recorded'
-      onSuccess(`Cyber cell report sent. ${deliveryLabel}. Audit ID ${response.audit_id}. Timestamp ${response.timestamp}.`)
+      onSuccess(
+        `Cyber cell report sent. ${deliveryLabel}. Audit ID ${response.audit_id}. Report ID ${response.report_id}. Timestamp ${response.timestamp}.`,
+      )
       onClose()
     } catch (apiError) {
       onError(extractErrorMessage(apiError, 'Cyber cell report send failed.'))
@@ -335,6 +337,16 @@ function CyberCellReportModal({ isOpen, onClose, defaultRequest, onSuccess, onEr
                     <div className="mt-3 space-y-3 text-sm text-slate-200">
                       <p>Eligible cases: {preview.eligible_cases_count || 0}</p>
                       <p>Preview token: {preview.preview_id || 'Not generated'}</p>
+                      <p>Report ID: {preview.report_id || 'Pending'}</p>
+                      <p>Signature status: {preview.signature_status || 'unsigned'}</p>
+                      {preview.verification_url ? (
+                        <p className="break-all text-[#CFFAFE]">
+                          Verification URL:{' '}
+                          <a href={preview.verification_url} target="_blank" rel="noreferrer" className="underline">
+                            {preview.verification_url}
+                          </a>
+                        </p>
+                      ) : null}
                       {preview.rejection_reasons?.length ? (
                         <div className="rounded-[18px] border border-[#FFC857]/25 bg-[#FFC857]/10 p-3 text-[#FFE4A3]">
                           {preview.rejection_reasons.join(' ')}
